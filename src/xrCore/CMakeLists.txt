@@ -1,4 +1,14 @@
 add_library(xrCore)
+find_package(Threads REQUIRED)
+
+if (ANDROID)
+    target_sources(xrCore PRIVATE
+        Android/AndroidArchiveDescriptors.cpp
+        Android/AndroidArchiveDescriptors.hpp
+        Android/AndroidCoreTest.cpp
+        Android/AndroidCoreTest.hpp
+    )
+endif()
 
 target_sources_grouped(
     TARGET xrCore
@@ -443,18 +453,18 @@ target_sources_grouped(
 
 target_include_directories(xrCore
     PUBLIC
-    "${CMAKE_SOURCE_DIR}/Externals/tracy/public"
+    "${XRAY_SOURCE_DIR}/Externals/tracy/public"
 
     PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
-    "${CMAKE_SOURCE_DIR}/src"
-    "${CMAKE_SOURCE_DIR}/Externals"
-    "${CMAKE_SOURCE_DIR}/Externals/mimalloc/include"
+    "${XRAY_SOURCE_DIR}/src"
+    "${XRAY_SOURCE_DIR}/Externals"
+    "${XRAY_SOURCE_DIR}/Externals/mimalloc/include"
 )
 
 target_link_libraries(xrCore
     PUBLIC
-    pthread
+    Threads::Threads
     $<$<PLATFORM_ID:FreeBSD,OpenBSD,NetBSD,DragonFlyBSD>:execinfo>
     SDL2::SDL2
 

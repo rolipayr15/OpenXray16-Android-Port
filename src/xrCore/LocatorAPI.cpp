@@ -5,6 +5,10 @@
 #include "stdafx.h"
 #pragma hdrstop // huh?
 
+#if defined(XR_PLATFORM_ANDROID)
+#include "Android/AndroidArchiveDescriptors.hpp"
+#endif
+
 #if defined(XR_PLATFORM_WINDOWS)
 #include <direct.h>
 #include <sys/stat.h>
@@ -19,6 +23,76 @@
 #include "file_stream_reader.h"
 #include "xrCore/Threading/Lock.hpp"
 #include "Crypto/trivial_encryptor.h"
+
+#if defined(XR_PLATFORM_ANDROID)
+// Bionic only exports glob()/globfree() from API 28, while OpenXRay supports
+// Android API 26. The locator only needs a trailing '*' directory scan, so a
+// small opendir-based compatibility implementation avoids raising minSdk.
+static int android_glob(pcstr pattern, glob_t* result)
+{
+    std::string directory = pattern;
+    if (!directory.empty() && directory.back() == '*')
+        directory.pop_back();
+
+    const std::string openPath = directory.empty() ? "." : directory;
+    DIR* handle = opendir(openPath.c_str());
+    if (!handle)
+        return GLOB_NOMATCH;
+
+    std::vector<std::string> matches;
+    while (dirent* entry = readdir(handle))
+    {
+        // POSIX glob('*') does not return dot entries or hidden files.
+        if (entry->d_name[0] == '.')
+            continue;
+
+        std::string fullPath = directory;
+        if (!fullPath.empty() && fullPath.back() != '/')
+            fullPath.push_back('/');
+        fullPath += entry->d_name;
+        matches.push_back(std::move(fullPath));
+    }
+    closedir(handle);
+
+    if (matches.empty())
+        return GLOB_NOMATCH;
+
+    result->gl_pathc = matches.size();
+    result->gl_matchc = matches.size();
+    result->gl_pathv = static_cast<char**>(calloc(matches.size() + 1, sizeof(char*)));
+    if (!result->gl_pathv)
+        return GLOB_NOSPACE;
+
+    for (size_t index = 0; index < matches.size(); ++index)
+    {
+        result->gl_pathv[index] = strdup(matches[index].c_str());
+        if (!result->gl_pathv[index])
+        {
+            for (size_t allocated = 0; allocated < index; ++allocated)
+                free(result->gl_pathv[allocated]);
+            free(result->gl_pathv);
+            result->gl_pathv = nullptr;
+            result->gl_pathc = 0;
+            result->gl_matchc = 0;
+            return GLOB_NOSPACE;
+        }
+    }
+    return 0;
+}
+
+static void android_globfree(glob_t* result)
+{
+    if (!result->gl_pathv)
+        return;
+
+    for (size_t index = 0; index < result->gl_pathc; ++index)
+        free(result->gl_pathv[index]);
+    free(result->gl_pathv);
+    result->gl_pathv = nullptr;
+    result->gl_pathc = 0;
+    result->gl_matchc = 0;
+}
+#endif
 
 constexpr size_t VFS_STANDARD_FILE = std::numeric_limits<size_t>::max();
 
@@ -369,7 +443,10 @@ IReader* open_chunk(int fd, u32 ID, pcstr archiveName, size_t archiveSize, bool 
 
                 if (!result && shouldDecrypt)
                 {
-                    // Let's try to decode with RU key
+                    // Restore the encrypted bytes before trying the RU key.
+                    // decode() transforms the buffer in-place, so applying a
+                    // second key directly would decode already-decoded data.
+                    g_trivial_encryptor.encode(src_data, dwSize, src_data);
                     g_trivial_encryptor.decode(src_data, dwSize, src_data, trivial_encryptor::key_flag::russian);
                     result = _decompressLZ(&dest, &dest_sz, src_data, dwSize, archiveSize);
                 }
@@ -483,14 +560,21 @@ void CLocatorAPI::archive::open()
     modif = file_info.st_mtime;
 #elif defined(XR_PLATFORM_POSIX)
     // Open the file
-    if (hSrcFile)
+    if (hSrcFile != -1)
         return;
 
     pstr conv_path = xr_strdup(path.c_str());
     convert_path_separators(conv_path);
-    hSrcFile = ::open(conv_path, O_RDONLY, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+#   if defined(XR_PLATFORM_ANDROID)
+    // SAF descriptors cannot be reopened through /proc/self/fd on Android's
+    // app SELinux domain. Duplicate the descriptor borrowed from the Java
+    // content provider, with a normal path fallback for private archives.
+    hSrcFile = xrDuplicateAndroidArchiveDescriptor(conv_path);
+    if (hSrcFile == -1)
+#   endif
+    hSrcFile = ::open(conv_path, O_RDONLY);
     R_ASSERT(hSrcFile != -1);
-    stat(conv_path, &file_info);
+    R_ASSERT(fstat(hSrcFile, &file_info) == 0);
 #   ifdef XR_PLATFORM_APPLE
     modif = file_info.st_mtimespec.tv_sec;
 #   else
@@ -665,7 +749,7 @@ bool ignore_path(pcstr _path)
 #elif defined(XR_PLATFORM_POSIX)
     pstr conv_path = xr_strdup(_path);
     convert_path_separators(conv_path);
-    int h = ::open(conv_path, O_RDONLY | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    int h = ::open(conv_path, O_RDONLY);
     xr_free(conv_path);
     if (h != -1)
     {
@@ -701,7 +785,11 @@ bool CLocatorAPI::Recurse(pcstr path)
     glob_t globbuf;
 
     globbuf.gl_offs = 256;
+#if defined(XR_PLATFORM_ANDROID)
+    int result = android_glob(scanPath, &globbuf);
+#else
     int result = glob(scanPath, GLOB_NOSORT, NULL, &globbuf);
+#endif
 
     if(0 != result)
         return false;
@@ -774,7 +862,11 @@ bool CLocatorAPI::Recurse(pcstr path)
 #ifdef XR_PLATFORM_WINDOWS
     _findclose(handle);
 #elif defined(XR_PLATFORM_POSIX)
+#   if defined(XR_PLATFORM_ANDROID)
+    android_globfree(&globbuf);
+#   else
     globfree(&globbuf);
+#   endif
 #else
 #   error Select or add implementation for your platform
 #endif

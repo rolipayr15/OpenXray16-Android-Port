@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenXRay</string>
+    <string name="launcher_title">OpenXRay for Android</string>
+    <string name="launcher_description">This open-source engine does not include S.T.A.L.K.E.R. game data. Copy the files from a PC release you own, then select their directory below.</string>
+    <string name="no_game_data_selected">No game-data directory selected.</string>
+    <string name="selected_game_data">Selected directory:\n%1$s</string>
+    <string name="select_game_data">Select game data directory</string>
+    <string name="start_engine_host">Start engine host</string>
+    <string name="host_stage_notice">Stage 5 renderer bootstrap is complete: native Vulkan now owns a persistent frame loop. Stage 6 is in progress: the ShoC game module builds for both ARM ABIs and validates the selected installation, but menu, level loading and gameplay are not connected yet.</string>
+    <string name="persistent_access_failed">Android did not grant persistent access to this directory.</string>
+    <string name="select_readable_directory">Select a readable game-data directory first.</string>
+</resources>

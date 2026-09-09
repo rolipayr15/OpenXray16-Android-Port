@@ -100,10 +100,12 @@ inline void _splitpath(const char* path, // Path Input
 }
 
 #include <iostream>
+#if !defined(XR_PLATFORM_CUSTOM_OUTPUT_DEBUG_STRING)
 inline void OutputDebugString(const char *str) // for linux debugger
 {
     std::cerr << str;
 }
+#endif
 
 inline unsigned long GetLastError()
 {
@@ -339,7 +341,7 @@ inline int vsnprintf_s(char* buffer, size_t size, size_t, const char* format, va
     //TODO add bound check
     return vsnprintf(buffer, size, format, list);
 }
-#define vsprintf_s(dest, size, format, args) vsprintf(dest, format, args)
+#define vsprintf_s(dest, size, format, args) vsnprintf(dest, size, format, args)
 #define _snprintf snprintf
 #define sprintf_s(buffer, buffer_size, stringbuffer, ...) sprintf(buffer, stringbuffer, ##__VA_ARGS__)
 //#define GetProcAddress(handle, name) dlsym(handle, name)

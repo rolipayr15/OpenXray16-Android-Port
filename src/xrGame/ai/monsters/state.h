@@ -6,6 +6,9 @@
 // Lain: added
 #ifdef DEBUG
 #include "debug_text_tree.h"
+
+class CBaseMonster;
+void add_monster_debug_info(CBaseMonster* monster, debug::text_tree& tree);
 #endif
 
 inline TTime xr_current_time() { return Device.dwTimeGlobal; }

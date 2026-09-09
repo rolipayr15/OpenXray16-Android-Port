@@ -94,7 +94,7 @@ public:
         // bitwise input/output
         getbuf = getlen = putbuf = putlen = 0;
     }
-    IC void Init_Output(int _rsize)
+    IC void Init_Output(size_t _rsize)
     {
         // output
         out_start = (u8*)xr_malloc(_rsize);
@@ -607,7 +607,7 @@ void Encode(void) /* compression */
     fs.PutFlush();
 }
 
-bool Decode(int total_size) /* recover */
+bool Decode(size_t total_size) /* recover */
 {
     int i, j, k, r, c;
     unsigned int count;
@@ -618,7 +618,10 @@ bool Decode(int total_size) /* recover */
     textsize |= (fs._getb() << 24);
     if (textsize == 0)
         return false;
-    if (total_size != -1 && static_cast<int>(textsize) > total_size)
+    // The decoded size is stored as an unsigned 32-bit value in the stream.
+    // Comparing it through int allowed corrupt data (or a wrong ShoC key) to
+    // become negative and reach the allocator as an enormous size_t value.
+    if (total_size != size_t(-1) && size_t(textsize) > total_size)
         return false;
 
     fs.Init_Output(textsize);

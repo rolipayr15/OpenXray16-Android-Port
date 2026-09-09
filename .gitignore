@@ -4,10 +4,13 @@
 !.appveyor*
 !.editorconfig
 !.vscode
+!.github/
+!.github/**
 
 # exclude binaries and temporary files
 [Bb]in/
 [Bb]uild*/
+local.properties
 
 # User-specific files
 *.user

@@ -246,9 +246,18 @@ void xrCore::Initialize(pcstr _ApplicationName, pcstr commandLine, bool init_fs,
         struct passwd *pw = getpwuid(uid);
         if (pw)
         {
-            strncpy(UserName, pw->pw_gecos, sizeof(UserName) - 1);
-            if (UserName[0] == '\0')
-                strncpy(UserName, pw->pw_name, sizeof(UserName) - 1);
+            // Bionic commonly leaves pw_gecos null. Desktop libc usually
+            // supplies an empty string, which hid this portability bug.
+            pcstr userName = pw->pw_gecos;
+            if (!userName || userName[0] == '\0')
+                userName = pw->pw_name;
+            if (userName)
+            {
+                strncpy(UserName, userName, sizeof(UserName) - 1);
+                UserName[sizeof(UserName) - 1] = '\0';
+            }
+            else
+                Msg("! Failed to get user name from passwd entry");
         }
         else
             Msg("! Failed to get user name");
@@ -303,7 +312,7 @@ void xrCore::Initialize(pcstr _ApplicationName, pcstr commandLine, bool init_fs,
 #endif // _EDITOR
 
 // TODO Add proper check for CMake Windows build
-#if !defined(XR_PLATFORM_WINDOWS)
+#if !defined(XR_PLATFORM_WINDOWS) && !defined(XR_PLATFORM_ANDROID)
         if (xr_stricmp(ApplicationPath, CMAKE_INSTALL_FULL_DATAROOTDIR) != 0)
             flags |= CLocatorAPI::flScanAppRoot;
 #endif
@@ -379,7 +388,10 @@ void SDLLogOutput(void* /*userdata*/, int category, SDL_LogPriority priority, co
     }
 
     static constexpr pcstr format = "%c [sdl][%s][%s]: %s";
-    const size_t size = sizeof(mark) + sizeof(from) + sizeof(type) + sizeof(format) + sizeof(message);
+    // sizeof(from/type/message) is only the pointer size. Long SDL messages
+    // would therefore overwrite this stack buffer on POSIX platforms, where
+    // the old vsprintf_s compatibility macro did not enforce its size.
+    const size_t size = xr_strlen(format) + xr_strlen(from) + xr_strlen(type) + xr_strlen(message) + 2;
     pstr buf = (pstr)xr_alloca(size);
 
     xr_sprintf(buf, size, format, mark, from, type, message);

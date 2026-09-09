@@ -1,5 +1,11 @@
 include_guard()
 
+# Android builds the engine targets from the Gradle native subproject, so the
+# engine source root is not always identical to CMake's top-level source dir.
+if (NOT DEFINED XRAY_SOURCE_DIR)
+    set(XRAY_SOURCE_DIR "${CMAKE_SOURCE_DIR}")
+endif()
+
 function(target_sources_grouped)
     cmake_parse_arguments(
         PARSED_ARGS
@@ -28,14 +34,14 @@ endfunction()
 
 function(query_git_info output_sha output_branch)
     execute_process(COMMAND git rev-parse --verify HEAD
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        WORKING_DIRECTORY "${XRAY_SOURCE_DIR}"
         OUTPUT_VARIABLE GIT_SHA1
         ERROR_QUIET
         OUTPUT_STRIP_TRAILING_WHITESPACE
     )
 
     execute_process(COMMAND git rev-parse --abbrev-ref HEAD
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        WORKING_DIRECTORY "${XRAY_SOURCE_DIR}"
         OUTPUT_VARIABLE GIT_BRANCH
         ERROR_QUIET
         OUTPUT_STRIP_TRAILING_WHITESPACE

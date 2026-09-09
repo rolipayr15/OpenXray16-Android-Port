@@ -1,5 +1,13 @@
 #include "StdAfx.h"
 #include "xrGame/ai/monsters/state.h"
+#include "xrGame/ai/monsters/basemonster/base_monster.h"
+
+#ifdef DEBUG
+void add_monster_debug_info(CBaseMonster* monster, debug::text_tree& tree)
+{
+    monster->add_debug_info(tree);
+}
+#endif
 
 xr_string make_xrstr(EMonsterState state) noexcept
 {

@@ -103,7 +103,7 @@ public:
         void *hSrcFile = nullptr;
         void *hSrcMap = nullptr;
 #elif defined(XR_PLATFORM_POSIX)
-        int hSrcFile = 0;
+        int hSrcFile = -1;
 #else
 #   error Select or add implementation for your platform
 #endif

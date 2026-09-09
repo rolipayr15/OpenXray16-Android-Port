@@ -16,7 +16,7 @@ set(ABIVER 5.1)
 set(NODOTABIVER 51)
 
 set(CMAKE_OSX_SYSROOT "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk")
-set(LUAJIT_DIR ${CMAKE_SOURCE_DIR}/Externals/LuaJIT/src CACHE PATH "Location of luajit sources")
+set(LUAJIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../LuaJIT/src" CACHE PATH "Location of luajit sources")
 
 option(BUILD_SHARED_LIBS "Build as shared library" ON)
 option(LUAJIT_BUILD_APP "Build application" OFF)
@@ -67,11 +67,8 @@ if (APPLE)
     set(ENV{MACOSX_DEPLOYMENT_TARGET} ${CMAKE_OSX_DEPLOYMENT_TARGET})
 endif()
 
-# Clean unnecessary files in LuaJIT source directory
-execute_process(
-    COMMAND make clean
-    WORKING_DIRECTORY ${LUAJIT_DIR}
-)
+# Do not mutate the LuaJIT submodule while configuring an out-of-tree build.
+# In particular, Android cross-build hosts are not expected to provide make.
 
 add_library(xrLuaJIT)
 
@@ -137,8 +134,18 @@ set(CCOPTIONS "${CCOPT};${XCFLAGS}")
 
 target_compile_options(xrLuaJIT PRIVATE ${CCOPTIONS})
 
+set(TESTARCH_TARGET_FLAGS)
+if (ANDROID)
+    string(REGEX REPLACE "[^0-9]" "" OPENXRAY_ANDROID_API "${ANDROID_PLATFORM}")
+    if (ANDROID_ABI STREQUAL "arm64-v8a")
+        list(APPEND TESTARCH_TARGET_FLAGS "--target=aarch64-none-linux-android${OPENXRAY_ANDROID_API}")
+    elseif (ANDROID_ABI STREQUAL "armeabi-v7a")
+        list(APPEND TESTARCH_TARGET_FLAGS "--target=armv7-none-linux-androideabi${OPENXRAY_ANDROID_API}")
+    endif()
+endif()
+
 execute_process(
-    COMMAND ${CMAKE_C_COMPILER} ${CCOPTIONS} -E lj_arch.h -dM
+    COMMAND ${CMAKE_C_COMPILER} ${TESTARCH_TARGET_FLAGS} ${CCOPTIONS} -E lj_arch.h -dM
     WORKING_DIRECTORY "${LUAJIT_DIR}"
     OUTPUT_VARIABLE TESTARCH_OUTPUT
     ERROR_VARIABLE TESTARCH_ERROR
@@ -306,8 +313,20 @@ if (TARGET_LJARCH STREQUAL "ppc")
     endif()
 endif()
 
-set(HOST_ACFLAGS "${CMAKE_C_FLAGS} ${CCOPTIONS} ${TARGET_ARCH}")
-set(HOST_ALDFLAGS "${CMAKE_C_FLAGS}")
+if (CMAKE_CROSSCOMPILING)
+    # buildvm is a host executable, but it must describe the target VM. Pass
+    # target architecture defines without Android --target/sysroot flags.
+    string(JOIN " " HOST_ACFLAGS ${TARGET_ARCH} ${XCFLAGS})
+    if (ANDROID)
+        # The native Windows compiler would otherwise describe Windows inside
+        # generated VM tables. Android follows LuaJIT's Linux/POSIX target ABI.
+        string(APPEND HOST_ACFLAGS " -DLUAJIT_OS=LUAJIT_OS_LINUX")
+    endif()
+    set(HOST_ALDFLAGS "")
+else()
+    set(HOST_ACFLAGS "${CMAKE_C_FLAGS} ${CCOPTIONS} ${TARGET_ARCH}")
+    set(HOST_ALDFLAGS "${CMAKE_C_FLAGS}")
+endif()
 
 string(APPEND TARGET_XCFLAGS " -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -U_FORTIFY_SOURCE")
 
@@ -325,24 +344,59 @@ set(DASM_DASC "${LUAJIT_DIR}/vm_${DASM_ARCH}.dasc")
 set(DASM "${LUAJIT_DIR}/../dynasm/dynasm.lua")
 set(BUILDVM_ARCH "${CMAKE_CURRENT_BINARY_DIR}/buildvm_arch.h")
 
+if (CMAKE_CROSSCOMPILING AND CMAKE_HOST_WIN32)
+    set(OPENXRAY_HOST_CMAKE_GENERATOR "Visual Studio 18 2026" CACHE STRING
+        "Native CMake generator used for LuaJIT build tools")
+    if (EXISTS "C:/Program Files/CMake/bin/cmake.exe")
+        set(OPENXRAY_HOST_CMAKE_COMMAND "C:/Program Files/CMake/bin/cmake.exe")
+    else()
+        set(OPENXRAY_HOST_CMAKE_COMMAND "${CMAKE_COMMAND}")
+    endif()
+    if (TARGET_LJARCH STREQUAL "arm")
+        # LuaJIT's buildvm embeds target-sized pointers in generated tables,
+        # so a 32-bit target requires a 32-bit native host generator too.
+        set(OPENXRAY_HOST_CMAKE_PLATFORM Win32)
+    else()
+        set(OPENXRAY_HOST_CMAKE_PLATFORM x64)
+    endif()
+    set(OPENXRAY_HOST_GENERATOR_ARGS
+        -G "${OPENXRAY_HOST_CMAKE_GENERATOR}"
+        -A "${OPENXRAY_HOST_CMAKE_PLATFORM}"
+    )
+    set(OPENXRAY_HOST_EXECUTABLE_DIR "Release")
+    set(OPENXRAY_HOST_EXECUTABLE_SUFFIX ".exe")
+    set(OPENXRAY_HOST_LUA_USE_POSIX OFF)
+    set(OPENXRAY_HOST_BUILD_KEY "${OPENXRAY_HOST_CMAKE_PLATFORM}")
+else()
+    set(OPENXRAY_HOST_CMAKE_COMMAND "${CMAKE_COMMAND}")
+    set(OPENXRAY_HOST_GENERATOR_ARGS -G "${CMAKE_GENERATOR}")
+    if (CMAKE_MAKE_PROGRAM)
+        list(APPEND OPENXRAY_HOST_GENERATOR_ARGS "-DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}")
+    endif()
+    set(OPENXRAY_HOST_EXECUTABLE_DIR "")
+    set(OPENXRAY_HOST_EXECUTABLE_SUFFIX "${CMAKE_EXECUTABLE_SUFFIX}")
+    set(OPENXRAY_HOST_LUA_USE_POSIX ${LUA_USE_POSIX})
+    set(OPENXRAY_HOST_BUILD_KEY native)
+endif()
+
 # Generate buildvm arch header
-set(MINILUA_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/HostBuildTools/minilua")
-set(MINILUA_FILE "${MINILUA_BINARY_DIR}/minilua")
+set(MINILUA_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/HostBuildTools/minilua-${OPENXRAY_HOST_BUILD_KEY}")
+set(MINILUA_FILE "${MINILUA_BINARY_DIR}/${OPENXRAY_HOST_EXECUTABLE_DIR}/minilua${OPENXRAY_HOST_EXECUTABLE_SUFFIX}")
 
 add_custom_command(
     OUTPUT "${MINILUA_FILE}"
-    COMMAND ${CMAKE_COMMAND}
+    COMMAND "${OPENXRAY_HOST_CMAKE_COMMAND}"
         -B${MINILUA_BINARY_DIR}
-        -G${CMAKE_GENERATOR}
+        ${OPENXRAY_HOST_GENERATOR_ARGS}
         -S${CMAKE_CURRENT_SOURCE_DIR}/HostBuildTools/minilua
         -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
         -DCMAKE_VERBOSE_MAKEFILE=${CMAKE_VERBOSE_MAKEFILE}
         -DCMAKE_BUILD_TYPE=Release
         -DLUAJIT_DIR=${LUAJIT_DIR}
-        -DLUA_USE_POSIX=${LUA_USE_POSIX}
+        -DLUA_USE_POSIX=${OPENXRAY_HOST_LUA_USE_POSIX}
         -DHOST_ACFLAGS="${HOST_ACFLAGS}"
         -DHOST_ALDFLAGS="${HOST_ALDFLAGS}"
-    COMMAND ${CMAKE_COMMAND} --build ${MINILUA_BINARY_DIR} --config Release --verbose
+    COMMAND "${OPENXRAY_HOST_CMAKE_COMMAND}" --build ${MINILUA_BINARY_DIR} --config Release --verbose
 )
 
 add_custom_command(OUTPUT ${BUILDVM_ARCH}
@@ -359,14 +413,22 @@ set_target_properties(buildvm_arch PROPERTIES
 )
 
 # Buildvm
-set(BUILDVM_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/HostBuildTools/buildvm")
-set(BUILDVM_FILE "${BUILDVM_BINARY_DIR}/buildvm")
+set(BUILDVM_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/HostBuildTools/buildvm-${OPENXRAY_HOST_BUILD_KEY}")
+set(BUILDVM_FILE "${BUILDVM_BINARY_DIR}/${OPENXRAY_HOST_EXECUTABLE_DIR}/buildvm${OPENXRAY_HOST_EXECUTABLE_SUFFIX}")
+file(GLOB OPENXRAY_LUAJIT_HOST_HEADERS CONFIGURE_DEPENDS "${LUAJIT_DIR}/*.h")
+set(OPENXRAY_LUAJIT_BUILDVM_SOURCES
+    "${LUAJIT_DIR}/host/buildvm_asm.c"
+    "${LUAJIT_DIR}/host/buildvm_fold.c"
+    "${LUAJIT_DIR}/host/buildvm_lib.c"
+    "${LUAJIT_DIR}/host/buildvm_peobj.c"
+    "${LUAJIT_DIR}/host/buildvm.c"
+)
 
 add_custom_command(
     OUTPUT "${BUILDVM_FILE}"
-    COMMAND ${CMAKE_COMMAND}
+    COMMAND "${OPENXRAY_HOST_CMAKE_COMMAND}"
         -B${BUILDVM_BINARY_DIR}
-        -G${CMAKE_GENERATOR}
+        ${OPENXRAY_HOST_GENERATOR_ARGS}
         -S${CMAKE_CURRENT_SOURCE_DIR}/HostBuildTools/buildvm
         -DCMAKE_VERBOSE_MAKEFILE=${CMAKE_VERBOSE_MAKEFILE}
         -DCMAKE_BUILD_TYPE=Release
@@ -374,7 +436,12 @@ add_custom_command(
         -DBUILDVM_ARCH=${BUILDVM_ARCH}
         -DHOST_ACFLAGS="${HOST_ACFLAGS}"
         -DHOST_ALDFLAGS="${HOST_ALDFLAGS}"
-    COMMAND ${CMAKE_COMMAND} --build ${BUILDVM_BINARY_DIR} --config Release --verbose
+    COMMAND "${OPENXRAY_HOST_CMAKE_COMMAND}" --build ${BUILDVM_BINARY_DIR} --config Release --verbose
+    DEPENDS
+        ${BUILDVM_ARCH}
+        ${OPENXRAY_LUAJIT_BUILDVM_SOURCES}
+        ${OPENXRAY_LUAJIT_HOST_HEADERS}
+        "${CMAKE_CURRENT_SOURCE_DIR}/HostBuildTools/buildvm/CMakeLists.txt"
 )
 
 add_custom_target(buildvm
@@ -411,7 +478,7 @@ macro(add_buildvm_target target mode)
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${target}"
         COMMAND "${BUILDVM_FILE}" ARGS -m ${mode} -o ${CMAKE_CURRENT_BINARY_DIR}/${target} ${ARGN}
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        DEPENDS buildvm ${ARGN}
+        DEPENDS "${BUILDVM_FILE}" ${ARGN}
     )
 endmacro()
 
@@ -562,7 +629,7 @@ endif()
 
 target_include_directories(xrLuaJIT
     PUBLIC
-    "${CMAKE_SOURCE_DIR}/Externals/LuaJIT/src"
+    "${LUAJIT_DIR}"
 
     PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}"

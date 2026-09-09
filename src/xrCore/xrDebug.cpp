@@ -647,7 +647,10 @@ void xrDebug::OnThreadSpawn()
     std::signal(SIGINT,  nullptr);
     std::signal(SIGILL,  +[](int signal) { handler_base("illegal instruction"); });
     std::signal(SIGFPE,  +[](int signal) { handler_base("floating point error"); });
-#   ifdef DEBUG
+#   if defined(DEBUG) && !defined(XR_PLATFORM_ANDROID)
+    // Android's debuggerd needs the original SIGSEGV context to produce a
+    // symbolizable tombstone. The desktop handler also returns to the faulting
+    // instruction, causing an endless signal loop on Bionic.
     std::signal(SIGSEGV, +[](int signal) { handler_base("segmentation fault"); });
 #   endif
     std::signal(SIGABRT, +[](int signal) { handler_base("application is aborting"); });

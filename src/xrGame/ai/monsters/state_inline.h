@@ -57,7 +57,7 @@ void CStateAbstract::execute()
             debug::text_tree tree;
             if (CBaseMonster* p_monster = smart_cast<CBaseMonster*>(object))
             {
-                p_monster->add_debug_info(tree);
+                add_monster_debug_info(p_monster, tree);
             }
 
             debug::log_text_tree(tree);
