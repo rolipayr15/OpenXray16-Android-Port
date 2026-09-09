@@ -235,17 +235,25 @@ void GetPlayerName_FromRegistry(char* name, u32 const name_size)
     if (!ReadRegistry_StrValue(REGISTRY_VALUE_USERNAME, name))
         name[0] = 0;
 #elif defined(XR_PLATFORM_POSIX)
+    name[0] = 0;
     uid_t uid = geteuid();
     struct passwd* pw = getpwuid(uid);
     if (pw)
     {
-        strcpy(name, pw->pw_gecos);
+        // Android's synthetic passwd entry is allowed to omit pw_gecos.
+        // Never pass that nullable field to strcpy, and keep both passwd
+        // variants bounded by the caller-provided buffer.
+        if (pw->pw_gecos && pw->pw_gecos[0])
+            xr_strcpy(name, name_size, pw->pw_gecos);
         char* pos = strchr(name, ','); // pw_gecos return string
         if (NULL != pos)
             *pos = 0;
-        if (0 == name[0])
-            strcpy(name, pw->pw_name);
+        if (0 == name[0] && pw->pw_name && pw->pw_name[0])
+            xr_strcpy(name, name_size, pw->pw_name);
     }
+
+    if (0 == name[0])
+        xr_strcpy(name, name_size, Core.UserName[0] ? Core.UserName : "Player");
 #else
 #   error Select or add implementation for your platform
 #endif

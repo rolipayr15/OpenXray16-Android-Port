@@ -345,7 +345,10 @@ set(DASM "${LUAJIT_DIR}/../dynasm/dynasm.lua")
 set(BUILDVM_ARCH "${CMAKE_CURRENT_BINARY_DIR}/buildvm_arch.h")
 
 if (CMAKE_CROSSCOMPILING AND CMAKE_HOST_WIN32)
-    set(OPENXRAY_HOST_CMAKE_GENERATOR "Visual Studio 18 2026" CACHE STRING
+    # The Android NDK CMake distribution currently exposes the VS 2022
+    # generator. Keep this configurable for newer host toolchains, but do not
+    # hard-code a generator that the pinned Android CMake cannot create.
+    set(OPENXRAY_HOST_CMAKE_GENERATOR "Visual Studio 17 2022" CACHE STRING
         "Native CMake generator used for LuaJIT build tools")
     if (EXISTS "C:/Program Files/CMake/bin/cmake.exe")
         set(OPENXRAY_HOST_CMAKE_COMMAND "C:/Program Files/CMake/bin/cmake.exe")

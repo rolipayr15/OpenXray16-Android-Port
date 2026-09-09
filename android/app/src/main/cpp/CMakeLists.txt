@@ -282,6 +282,12 @@ add_library(main SHARED
     AndroidGameModuleProbe.hpp
     AndroidVulkanBootstrap.cpp
     AndroidVulkanBootstrap.hpp
+    AndroidVulkanRenderDevice.cpp
+    AndroidVulkanRenderDevice.hpp
+    AndroidVulkanRenderServices.cpp
+    AndroidVulkanRenderServices.hpp
+    AndroidVulkanRendererModule.cpp
+    AndroidVulkanRendererModule.hpp
     "${AndroidBootstrapVertSpv.hpp}"
     "${AndroidBootstrapFragSpv.hpp}"
 )

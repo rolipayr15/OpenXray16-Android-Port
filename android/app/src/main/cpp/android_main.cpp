@@ -10,7 +10,12 @@
 #include "xrScriptEngine/script_space.hpp"
 #include "AndroidGameModuleProbe.hpp"
 #include "AndroidSafBridge.hpp"
-#include "AndroidVulkanBootstrap.hpp"
+#include "AndroidVulkanRenderDevice.hpp"
+#include "AndroidVulkanRenderServices.hpp"
+#include "AndroidVulkanRendererModule.hpp"
+#include "Include/xrAPI/xrAPI.h"
+#include "xrEngine/x_ray.h"
+#include "xrGame/xrGame.h"
 #include "Opcode.h"
 #include "md5.h"
 #include <imgui.h>
@@ -76,6 +81,8 @@ bool PrepareFilesystemFixture(const char* appFilesPath, std::string& fsConfigPat
     if (!EnsureDirectory(root) ||
         !EnsureDirectory(root + "/_appdata_") ||
         !EnsureDirectory(root + "/_appdata_/logs") ||
+        !EnsureDirectory(root + "/_appdata_/savedgames") ||
+        !EnsureDirectory(root + "/_appdata_/screenshots") ||
         !EnsureDirectory(root + "/gamedata"))
     {
         return false;
@@ -86,7 +93,22 @@ bool PrepareFilesystemFixture(const char* appFilesPath, std::string& fsConfigPat
         "$app_data_root$ = true|false|$fs_root$|_appdata_\\\n"
         "$arch_dir$ = false|false|$fs_root$\n"
         "$game_data$ = true|true|$fs_root$|gamedata\\\n"
-        "$logs$ = true|false|$app_data_root$|logs\\\n";
+        "$game_ai$ = true|true|$game_data$|ai\\\n"
+        "$game_anims$ = true|true|$game_data$|anims\\\n"
+        "$game_config$ = true|false|$game_data$|config\\\n"
+        "$game_levels$ = true|true|$game_data$|levels\\\n"
+        "$game_meshes$ = true|true|$game_data$|meshes\\\n"
+        "$game_particles$ = true|true|$game_data$|particles\\\n"
+        "$game_scripts$ = true|true|$game_data$|scripts\\\n"
+        "$game_shaders$ = true|true|$game_data$|shaders\\\n"
+        "$game_sounds$ = true|true|$game_data$|sounds\\\n"
+        "$game_spawn$ = true|true|$game_data$|spawns\\\n"
+        "$game_textures$ = true|true|$game_data$|textures\\\n"
+        "$game_weather_effects$ = true|true|$game_config$|environment\\weather_effects\\\n"
+        "$game_weathers$ = true|true|$game_config$|environment\\weathers\\\n"
+        "$logs$ = true|false|$app_data_root$|logs\\\n"
+        "$screenshots$ = true|false|$app_data_root$|screenshots\\\n"
+        "$game_saves$ = true|false|$app_data_root$|savedgames\\\n";
     static constexpr char Marker[] = "openxray-android-vfs-smoke-v1\n";
 
     fsConfigPath = root + "/fsgame.ltx";
@@ -619,6 +641,26 @@ int main(int argc, char** argv)
     }
     __android_log_write(ANDROID_LOG_INFO, LogTag, "xrCore private filesystem smoke test passed");
 
+    if (archiveMirror.size() > 1)
+    {
+        // The preflight deliberately owns a short xrCore/SDL lifecycle so a
+        // bad installation fails before any game state is created. Restart
+        // through CApplication now, keeping the descriptor-backed archive
+        // mirror alive for the complete engine/game lifecycle below.
+        Core._destroy();
+        SDL_Quit();
+
+        const std::string commandLine =
+            std::string("-shoc -nolog -nosplash -fsltx ") + fixtureConfig;
+        AndroidVulkanRendererModule rendererModule(appFilesPath);
+        const std::array<RendererModule*, 2> renderModules = { &rendererModule, nullptr };
+
+        __android_log_write(ANDROID_LOG_INFO, LogTag,
+            "Starting full xrEngine/xrGame lifecycle with Android Vulkan renderer module");
+        CApplication application(commandLine.c_str(), &xrGame, renderModules);
+        return application.Run();
+    }
+
     SDL_Window* window = SDL_CreateWindow(
         "OpenXRay Android Host",
         SDL_WINDOWPOS_UNDEFINED,
@@ -634,18 +676,24 @@ int main(int argc, char** argv)
         SDL_Quit();
         return 2;
     }
-    AndroidVulkanRenderer renderer;
-    if (!renderer.Initialize(window, appFilesPath))
+    AndroidVulkanRenderDevice renderer(appFilesPath);
+    AndroidVulkanRenderServices renderServices;
+    renderServices.Attach(renderer);
+    u32 renderWidth = 1280;
+    u32 renderHeight = 720;
+    float renderHalfWidth = 640.0f;
+    float renderHalfHeight = 360.0f;
+    renderer.Create(window, renderWidth, renderHeight, renderHalfWidth, renderHalfHeight);
+    if (renderer.HasFailed())
     {
-        __android_log_write(ANDROID_LOG_ERROR, LogTag, "Vulkan renderer bootstrap failed");
+        __android_log_write(ANDROID_LOG_ERROR, LogTag, "Vulkan GEnv.Render bootstrap failed");
+        renderServices.Detach();
         SDL_DestroyWindow(window);
         Core._destroy();
         SDL_Quit();
         return 15;
     }
 
-    const Uint64 performanceFrequency = SDL_GetPerformanceFrequency();
-    const Uint64 frameLoopStart = SDL_GetPerformanceCounter();
     std::uint64_t frameIndex = 0;
     bool rendererFailed = false;
     bool running = true;
@@ -662,19 +710,19 @@ int main(int argc, char** argv)
 
         ++frameIndex;
         Core.dwFrame = static_cast<u32>(frameIndex);
-        const float elapsedSeconds = static_cast<float>(
-            static_cast<double>(SDL_GetPerformanceCounter() - frameLoopStart) /
-            static_cast<double>(performanceFrequency));
-        if (!renderer.DrawFrame(frameIndex, elapsedSeconds))
+        GEnv.Render->Begin();
+        GEnv.Render->End();
+        if (renderer.HasFailed())
         {
-            __android_log_write(ANDROID_LOG_ERROR, LogTag, "Persistent Vulkan host frame failed");
+            __android_log_write(ANDROID_LOG_ERROR, LogTag, "Persistent Vulkan GEnv.Render frame failed");
             rendererFailed = true;
             running = false;
         }
         SDL_Delay(1);
     }
 
-    renderer.Shutdown();
+    GEnv.Render->Destroy();
+    renderServices.Detach();
     SDL_DestroyWindow(window);
     Core._destroy();
     __android_log_write(ANDROID_LOG_INFO, LogTag, "xrCore lifecycle destroyed cleanly");
