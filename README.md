@@ -3,7 +3,7 @@
 
   # OpenXRay16 — Android Port
 
-  **Experimental native Android port of S.T.A.L.K.E.R.: Shadow of Chernobyl**
+  **Experimental native Android port of S.T.A.L.K.E.R. Game**
 
   [![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)](android/README.md)
   [![ABI](https://img.shields.io/badge/ABI-arm64--v8a-blue)](android/README.md)
