@@ -345,11 +345,6 @@ set(DASM "${LUAJIT_DIR}/../dynasm/dynasm.lua")
 set(BUILDVM_ARCH "${CMAKE_CURRENT_BINARY_DIR}/buildvm_arch.h")
 
 if (CMAKE_CROSSCOMPILING AND CMAKE_HOST_WIN32)
-    # The Android NDK CMake distribution currently exposes the VS 2022
-    # generator. Keep this configurable for newer host toolchains, but do not
-    # hard-code a generator that the pinned Android CMake cannot create.
-    set(OPENXRAY_HOST_CMAKE_GENERATOR "Visual Studio 17 2022" CACHE STRING
-        "Native CMake generator used for LuaJIT build tools")
     if (EXISTS "C:/Program Files/CMake/bin/cmake.exe")
         set(OPENXRAY_HOST_CMAKE_COMMAND "C:/Program Files/CMake/bin/cmake.exe")
     else()
@@ -362,11 +357,40 @@ if (CMAKE_CROSSCOMPILING AND CMAKE_HOST_WIN32)
     else()
         set(OPENXRAY_HOST_CMAKE_PLATFORM x64)
     endif()
-    set(OPENXRAY_HOST_GENERATOR_ARGS
-        -G "${OPENXRAY_HOST_CMAKE_GENERATOR}"
-        -A "${OPENXRAY_HOST_CMAKE_PLATFORM}"
-    )
-    set(OPENXRAY_HOST_EXECUTABLE_DIR "Release")
+    if ((OPENXRAY_HOST_CMAKE_PLATFORM STREQUAL "Win32" AND EXISTS "${OPENXRAY_HOST_TCC32}") OR
+        (OPENXRAY_HOST_CMAKE_PLATFORM STREQUAL "x64" AND EXISTS "${OPENXRAY_HOST_TCC64}"))
+        if (OPENXRAY_HOST_CMAKE_PLATFORM STREQUAL "Win32")
+            set(OPENXRAY_HOST_TCC "${OPENXRAY_HOST_TCC32}")
+        else()
+            set(OPENXRAY_HOST_TCC "${OPENXRAY_HOST_TCC64}")
+        endif()
+        set(OPENXRAY_HOST_DIRECT_TCC ON)
+        set(OPENXRAY_HOST_EXECUTABLE_DIR "")
+    elseif (OPENXRAY_HOST_LLVM_MINGW_ROOT AND
+        EXISTS "${OPENXRAY_HOST_LLVM_MINGW_ROOT}/bin/x86_64-w64-mingw32-clang.exe")
+        if (OPENXRAY_HOST_CMAKE_PLATFORM STREQUAL "Win32")
+            set(OPENXRAY_HOST_C_COMPILER
+                "${OPENXRAY_HOST_LLVM_MINGW_ROOT}/bin/i686-w64-mingw32-clang.exe")
+        else()
+            set(OPENXRAY_HOST_C_COMPILER
+                "${OPENXRAY_HOST_LLVM_MINGW_ROOT}/bin/x86_64-w64-mingw32-clang.exe")
+        endif()
+        set(OPENXRAY_HOST_GENERATOR_ARGS
+            -G Ninja
+            "-DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+            "-DCMAKE_C_COMPILER=${OPENXRAY_HOST_C_COMPILER}"
+        )
+        set(OPENXRAY_HOST_EXECUTABLE_DIR "")
+    else()
+        # Fall back to MSVC on developer machines that already provide it.
+        set(OPENXRAY_HOST_CMAKE_GENERATOR "Visual Studio 17 2022" CACHE STRING
+            "Native CMake generator used for LuaJIT build tools")
+        set(OPENXRAY_HOST_GENERATOR_ARGS
+            -G "${OPENXRAY_HOST_CMAKE_GENERATOR}"
+            -A "${OPENXRAY_HOST_CMAKE_PLATFORM}"
+        )
+        set(OPENXRAY_HOST_EXECUTABLE_DIR "Release")
+    endif()
     set(OPENXRAY_HOST_EXECUTABLE_SUFFIX ".exe")
     set(OPENXRAY_HOST_LUA_USE_POSIX OFF)
     set(OPENXRAY_HOST_BUILD_KEY "${OPENXRAY_HOST_CMAKE_PLATFORM}")
@@ -386,21 +410,32 @@ endif()
 set(MINILUA_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/HostBuildTools/minilua-${OPENXRAY_HOST_BUILD_KEY}")
 set(MINILUA_FILE "${MINILUA_BINARY_DIR}/${OPENXRAY_HOST_EXECUTABLE_DIR}/minilua${OPENXRAY_HOST_EXECUTABLE_SUFFIX}")
 
-add_custom_command(
-    OUTPUT "${MINILUA_FILE}"
-    COMMAND "${OPENXRAY_HOST_CMAKE_COMMAND}"
-        -B${MINILUA_BINARY_DIR}
-        ${OPENXRAY_HOST_GENERATOR_ARGS}
-        -S${CMAKE_CURRENT_SOURCE_DIR}/HostBuildTools/minilua
-        -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
-        -DCMAKE_VERBOSE_MAKEFILE=${CMAKE_VERBOSE_MAKEFILE}
-        -DCMAKE_BUILD_TYPE=Release
-        -DLUAJIT_DIR=${LUAJIT_DIR}
-        -DLUA_USE_POSIX=${OPENXRAY_HOST_LUA_USE_POSIX}
-        -DHOST_ACFLAGS="${HOST_ACFLAGS}"
-        -DHOST_ALDFLAGS="${HOST_ALDFLAGS}"
-    COMMAND "${OPENXRAY_HOST_CMAKE_COMMAND}" --build ${MINILUA_BINARY_DIR} --config Release --verbose
-)
+if (OPENXRAY_HOST_DIRECT_TCC)
+    add_custom_command(
+        OUTPUT "${MINILUA_FILE}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${MINILUA_BINARY_DIR}"
+        COMMAND "${OPENXRAY_HOST_TCC}" -D__GNUC__=4 -D__GNUC_MINOR__=8 ${HOST_ACFLAGS}
+            -o "${MINILUA_FILE}" "${LUAJIT_DIR}/host/minilua.c"
+        DEPENDS "${LUAJIT_DIR}/host/minilua.c"
+        VERBATIM
+    )
+else()
+    add_custom_command(
+        OUTPUT "${MINILUA_FILE}"
+        COMMAND "${OPENXRAY_HOST_CMAKE_COMMAND}"
+            -B${MINILUA_BINARY_DIR}
+            ${OPENXRAY_HOST_GENERATOR_ARGS}
+            -S${CMAKE_CURRENT_SOURCE_DIR}/HostBuildTools/minilua
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
+            -DCMAKE_VERBOSE_MAKEFILE=${CMAKE_VERBOSE_MAKEFILE}
+            -DCMAKE_BUILD_TYPE=Release
+            -DLUAJIT_DIR=${LUAJIT_DIR}
+            -DLUA_USE_POSIX=${OPENXRAY_HOST_LUA_USE_POSIX}
+            -DHOST_ACFLAGS="${HOST_ACFLAGS}"
+            -DHOST_ALDFLAGS="${HOST_ALDFLAGS}"
+        COMMAND "${OPENXRAY_HOST_CMAKE_COMMAND}" --build ${MINILUA_BINARY_DIR} --config Release --verbose
+    )
+endif()
 
 add_custom_command(OUTPUT ${BUILDVM_ARCH}
     COMMAND "${MINILUA_FILE}" ${DASM} ${DASM_FLAGS} -o ${BUILDVM_ARCH} ${DASM_DASC}
@@ -427,25 +462,40 @@ set(OPENXRAY_LUAJIT_BUILDVM_SOURCES
     "${LUAJIT_DIR}/host/buildvm.c"
 )
 
-add_custom_command(
-    OUTPUT "${BUILDVM_FILE}"
-    COMMAND "${OPENXRAY_HOST_CMAKE_COMMAND}"
-        -B${BUILDVM_BINARY_DIR}
-        ${OPENXRAY_HOST_GENERATOR_ARGS}
-        -S${CMAKE_CURRENT_SOURCE_DIR}/HostBuildTools/buildvm
-        -DCMAKE_VERBOSE_MAKEFILE=${CMAKE_VERBOSE_MAKEFILE}
-        -DCMAKE_BUILD_TYPE=Release
-        -DLUAJIT_DIR=${LUAJIT_DIR}
-        -DBUILDVM_ARCH=${BUILDVM_ARCH}
-        -DHOST_ACFLAGS="${HOST_ACFLAGS}"
-        -DHOST_ALDFLAGS="${HOST_ALDFLAGS}"
-    COMMAND "${OPENXRAY_HOST_CMAKE_COMMAND}" --build ${BUILDVM_BINARY_DIR} --config Release --verbose
-    DEPENDS
-        ${BUILDVM_ARCH}
-        ${OPENXRAY_LUAJIT_BUILDVM_SOURCES}
-        ${OPENXRAY_LUAJIT_HOST_HEADERS}
-        "${CMAKE_CURRENT_SOURCE_DIR}/HostBuildTools/buildvm/CMakeLists.txt"
-)
+if (OPENXRAY_HOST_DIRECT_TCC)
+    add_custom_command(
+        OUTPUT "${BUILDVM_FILE}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${BUILDVM_BINARY_DIR}"
+        COMMAND "${OPENXRAY_HOST_TCC}" -D__GNUC__=4 -D__GNUC_MINOR__=8 ${HOST_ACFLAGS}
+            -I "${CMAKE_CURRENT_BINARY_DIR}" -I "${LUAJIT_DIR}"
+            -o "${BUILDVM_FILE}" ${OPENXRAY_LUAJIT_BUILDVM_SOURCES}
+        DEPENDS
+            ${BUILDVM_ARCH}
+            ${OPENXRAY_LUAJIT_BUILDVM_SOURCES}
+            ${OPENXRAY_LUAJIT_HOST_HEADERS}
+        VERBATIM
+    )
+else()
+    add_custom_command(
+        OUTPUT "${BUILDVM_FILE}"
+        COMMAND "${OPENXRAY_HOST_CMAKE_COMMAND}"
+            -B${BUILDVM_BINARY_DIR}
+            ${OPENXRAY_HOST_GENERATOR_ARGS}
+            -S${CMAKE_CURRENT_SOURCE_DIR}/HostBuildTools/buildvm
+            -DCMAKE_VERBOSE_MAKEFILE=${CMAKE_VERBOSE_MAKEFILE}
+            -DCMAKE_BUILD_TYPE=Release
+            -DLUAJIT_DIR=${LUAJIT_DIR}
+            -DBUILDVM_ARCH=${BUILDVM_ARCH}
+            -DHOST_ACFLAGS="${HOST_ACFLAGS}"
+            -DHOST_ALDFLAGS="${HOST_ALDFLAGS}"
+        COMMAND "${OPENXRAY_HOST_CMAKE_COMMAND}" --build ${BUILDVM_BINARY_DIR} --config Release --verbose
+        DEPENDS
+            ${BUILDVM_ARCH}
+            ${OPENXRAY_LUAJIT_BUILDVM_SOURCES}
+            ${OPENXRAY_LUAJIT_HOST_HEADERS}
+            "${CMAKE_CURRENT_SOURCE_DIR}/HostBuildTools/buildvm/CMakeLists.txt"
+    )
+endif()
 
 add_custom_target(buildvm
     DEPENDS "${BUILDVM_FILE}"

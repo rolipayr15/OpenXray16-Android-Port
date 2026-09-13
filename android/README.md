@@ -1,14 +1,46 @@
-# OpenXRay Android host
+# Android build and test guide
 
-This Gradle project builds the open-source Android host only. It never packages commercial S.T.A.L.K.E.R. data.
+The Android project builds an engine-only development preview. No commercial game data
+is embedded in the APK.
 
-Bootstrap the pinned SDK/NDK from the repository root, then build the debug APK:
+## Current target
+
+- Android API 26+;
+- `arm64-v8a` only for the current stabilization cycle;
+- native Vulkan renderer;
+- pinned JDK 17, Gradle 8.13, Android SDK 36, NDK r29 and CMake 4.1.2.
+
+ARMv7 source support is retained but its build is temporarily disabled until the ARM64
+gameplay renderer is functional.
+
+## Fresh checkout
+
+Initialize the repository and submodules:
 
 ```powershell
+git submodule update --init --recursive
+```
+
+The port carries reproducible compatibility patches for upstream submodules. Apply them
+directly, or let the SDK bootstrap do it automatically:
+
+```powershell
+./misc/android/apply-submodule-patches.ps1
 ./misc/android/bootstrap-sdk.ps1 -AcceptLicenses
+```
+
+The patch command is idempotent: already-applied patches are detected and left alone.
+
+## Build
+
+From the repository root:
+
+```powershell
 $env:ANDROID_SDK_ROOT = (Resolve-Path ../.toolchains/android-sdk)
 ./android/gradlew.bat -p android assembleDebug
 ```
+
+The APK is written to `android/app/build/outputs/apk/debug/app-debug.apk`.
 
 Run Android Lint with:
 
@@ -16,24 +48,63 @@ Run Android Lint with:
 ./android/gradlew.bat -p android lintDebug
 ```
 
-The checked-in lint baseline contains findings from the exact SDL2 submodule revision only. New launcher or host findings still fail the task.
+The lint baseline only suppresses findings inherited from pinned SDL2. New launcher or
+host findings still fail the task.
 
-The launcher uses Android's Storage Access Framework to retain read access to a directory selected by the user. The URI is passed into native C++ but is not treated as an ordinary filesystem path.
+## Install and run
 
-The current host builds `xrCore`, scripting, physics, media/audio, the complete static `xrRender_GL` dependency graph and the complete `xrGame` graph for both ABIs. `libmain.so` calls a small ABI probe compiled inside `xrGame`, so the game target is a checked runtime dependency instead of an unused build side effect. On start the host enumerates the selected SAF root, runs the native dependency smoke suite, initializes the real core filesystem against a generated fixture in app-private storage and then creates the SDL/Vulkan window. The persistent Vulkan backend is now owned through an Android `IRender` implementation and the frame loop enters it through `GEnv.Render->Begin()`/`End()`, establishing the first real `CRenderDevice` integration seam. Model, resource, render-factory and UI-render methods remain explicit Stage 6 stubs and are not treated as working engine services. This fixture contains no commercial game data. Seekable `gamedata.db*` files are mirrored into the locator through private descriptor-backed symlinks, without copying their bytes.
+```powershell
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+adb shell am start -n org.openxray.android/.LauncherActivity
+```
 
-When a full ShoC archive set is present, the Stage 6 preflight opens the engine configuration, Lua bootstrap and main-menu layout through the archive VFS. It then parses the complete recursive `system.ltx` and `game.ltx` include graphs with the real `CInifile` implementation. No contents are logged or copied. The physical reference installation currently reports 12 archives, 28,164 VFS files, 1,245 system sections and 152 game sections.
+Choose the root of a legally obtained Shadow of Chernobyl installation. The launcher
+retains read permission through Android's Storage Access Framework and passes the URI to
+native C++; it is never treated as an ordinary filesystem path.
 
-OpenAL Soft 1.25.2 is fetched from its official upstream archive with a pinned SHA-256, built as a replaceable shared `libopenal.so`, and configured to require Android's OpenSL ES backend. Utilities, examples, installation targets and network-loaded backends are disabled. A successful device run reports `OpenAL Soft device/context smoke test passed`.
+For logs:
 
-After building the desktop baseline, generate the freely redistributable archive fixture with:
+```powershell
+adb logcat -s OpenXRay
+```
+
+## Runtime architecture
+
+The APK contains the SDL activity, launcher, SAF bridge and one native engine library.
+The native graph includes `xrCore`, Lua/LuaJIT compatibility code, scripting, physics,
+OpenAL Soft/OpenSL ES, Vorbis, Theora, image codecs, `xrEngine`, `xrGame` and the Android
+Vulkan bridge.
+
+At startup the host:
+
+1. validates the selected SAF tree;
+2. exposes seekable `gamedata.db*` archives through descriptor-backed private links;
+3. mounts and validates the ShoC VFS/configuration graph;
+4. initializes the real engine and game module;
+5. creates the SDL surface and native Vulkan device;
+6. runs the original startup sequencer, UI and main menu.
+
+The Vulkan bootstrap uploads DDS UI textures, renders font alpha correctly, animates
+`.seq` textures, decodes OGM/Theora frames on the CPU and updates live Vulkan textures.
+Intro movies and the animated main-menu background use original game resources and timing.
+
+## Known limitations
+
+- The world renderer is still a bootstrap: level geometry and models are not visible.
+- Starting a new game reaches level/object initialization but not playable rendering.
+- Some render-factory services remain no-op implementations required for staged startup.
+- Dynamic video upload currently uses synchronous staging and queue waits; this will be
+  replaced with persistent asynchronous uploads.
+- Android pause/resume and surface loss need broader device testing.
+- Touch-first controls are not implemented.
+
+## Local archive fixture
+
+After building a desktop baseline, create a freely redistributable archive fixture with:
 
 ```powershell
 ./misc/android/build-xrarchive-fixture.ps1
 ```
 
-The ignored output is `build/android-fixtures/gamedata.db0`. It is intended for local device testing of SAF descriptor access and X-Ray archive discovery; it is not packaged into the APK.
-
-Stage 5 is complete as a renderer-bootstrap gate. The host compiles reviewable GLSL to embedded SPIR-V with the pinned NDK, creates a Vulkan render pass and graphics pipeline, keeps them alive for the full SDL window lifecycle, presents continuously through the swapchain, and stores the driver pipeline cache only in app-private storage. This is a real persistent shader/pipeline/presentation loop, not yet an OpenXRay scene. For native progress, filter logcat by the `OpenXRay` tag; a successful run reports `Presented first persistent Vulkan host frame` followed by periodic `Vulkan host frame loop alive` messages.
-
-The existing OpenXRay GL renderer requests desktop OpenGL 4.1. Zink remains an optional, capability-gated bridge for devices that meet Mesa's requirements; the physical Mali-G57 test device does not. The host therefore selects native Vulkan and never forces a false GL version override. The static GL/R2 renderer is compiled on Android to expose portability failures while its desktop-GL entry points remain disconnected. The next Stage 6 integration boundary is the native Vulkan render factory and UI renderer required before `xrGameModule::initialize`, `CGamePersistent`, the menu and a level can run.
+The ignored `build/android-fixtures/gamedata.db0` output is only for local SAF/VFS tests
+and is never packaged into the APK.

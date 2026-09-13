@@ -34,6 +34,12 @@ void SetSDLSettings(pcstr title)
 #ifdef  SDL_HINT_MOUSE_AUTO_CAPTURE
     SDL_SetHint(SDL_HINT_MOUSE_AUTO_CAPTURE, "0");
 #endif
+#if defined(XR_PLATFORM_ANDROID) && defined(SDL_HINT_ORIENTATIONS)
+    // X-Ray's UI and camera are landscape-first. Without an explicit hint
+    // SDL treats the resizable 640x480 window as full-sensor on Android and
+    // can create a portrait 1080x2340 Vulkan surface.
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+#endif
 }
 } // namespace
 

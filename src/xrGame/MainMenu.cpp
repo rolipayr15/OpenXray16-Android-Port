@@ -114,12 +114,15 @@ CMainMenu::CMainMenu()
 
         for (cpcstr name : ErrMsgBoxTemplate)
         {
-            CUIMessageBoxEx* msgBox = m_pMB_ErrDlgs.emplace_back(xr_new<CUIMessageBoxEx>());
+            CUIMessageBoxEx* msgBox = xr_new<CUIMessageBoxEx>();
             if (!msgBox->InitMessageBox(name))
             {
-                m_pMB_ErrDlgs.pop_back();
                 xr_delete(msgBox);
+                msgBox = nullptr;
             }
+            // Keep enum-indexed slots stable even when an optional multiplayer
+            // message-box template is absent from the selected ShoC data set.
+            m_pMB_ErrDlgs.push_back(msgBox);
         }
 
         CUIMessageBoxEx* downloadMsg = m_pMB_ErrDlgs[DownloadMPMap];

@@ -20,3 +20,7 @@
 *.PDF	 diff=astextplain
 *.rtf	 diff=astextplain
 *.RTF	 diff=astextplain
+
+# Patch payloads preserve upstream context verbatim; their leading diff marker
+# is not source indentation and must not be checked as whitespace damage.
+misc/android/patches/*.patch whitespace=-trailing-space,-space-before-tab

@@ -97,6 +97,7 @@ $propertiesPath = Join-Path $PSScriptRoot 'toolchain.properties'
 $versions = Read-ToolchainProperties -Path $propertiesPath
 
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+& (Join-Path $PSScriptRoot 'apply-submodule-patches.ps1') -RepositoryRoot $repositoryRoot
 if (!$SdkRoot) {
     $workspaceRoot = Split-Path $repositoryRoot -Parent
     $SdkRoot = Join-Path $workspaceRoot '.toolchains\android-sdk'

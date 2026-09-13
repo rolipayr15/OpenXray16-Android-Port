@@ -12,13 +12,44 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <sys/stat.h>
+#include <unordered_map>
 #include <vector>
 
 namespace
 {
 constexpr const char* LogTag = "OpenXRay";
+
+struct UiBatch
+{
+    std::uint32_t firstVertex{};
+    std::uint32_t vertexCount{};
+    AndroidVulkanUiPrimitive primitive{};
+    AndroidVulkanUiScissor scissor{};
+    AndroidVulkanUiTexture texture{};
+    AndroidVulkanUiTextureMode textureMode{AndroidVulkanUiTextureMode::Normal};
+};
+
+struct UiPushConstants
+{
+    float width{};
+    float height{};
+    std::uint32_t textureMode{};
+    std::uint32_t reserved{};
+};
+
+struct UiTexture
+{
+    std::string name;
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    std::uint32_t width{};
+    std::uint32_t height{};
+};
 
 void LogVulkanError(const char* operation, VkResult result)
 {
@@ -261,13 +292,178 @@ public:
 
         initialized = CreateInstance() && CreateSurface() && SelectPhysicalDevice() && CreateDevice() &&
             CreatePipelineCache() && CreateSwapchain() && CreateGraphicsPipeline() && CreateCommands() &&
-            SavePipelineCache();
+            CreateFallbackTexture() && SavePipelineCache();
         return initialized;
+    }
+
+    AndroidVulkanUiTexture CreateUiTexture(const char* name, std::uint32_t width,
+        std::uint32_t height, const std::uint8_t* rgbaPixels, std::size_t byteCount)
+    {
+        if (!name || !name[0] || !rgbaPixels || width == 0 || height == 0 ||
+            byteCount != static_cast<std::size_t>(width) * height * 4 ||
+            device == VK_NULL_HANDLE || commandPool == VK_NULL_HANDLE)
+        {
+            return 0;
+        }
+
+        const auto existing = uiTextureByName.find(name);
+        if (existing != uiTextureByName.end())
+            return existing->second;
+
+        UiTexture uploaded;
+        if (!UploadUiTexture(width, height, rgbaPixels, byteCount, uploaded))
+            return 0;
+        uploaded.name = name;
+
+        uiTextures.push_back(uploaded);
+        const AndroidVulkanUiTexture handle = static_cast<AndroidVulkanUiTexture>(uiTextures.size());
+        uiTextureByName.emplace(name, handle);
+        return handle;
+    }
+
+    bool UpdateUiTexture(AndroidVulkanUiTexture handle,
+        const std::uint8_t* rgbaPixels, std::size_t byteCount)
+    {
+        if (handle == 0 || handle > uiTextures.size() || !rgbaPixels ||
+            device == VK_NULL_HANDLE || commandPool == VK_NULL_HANDLE)
+        {
+            return false;
+        }
+
+        UiTexture& texture = uiTextures[static_cast<std::size_t>(handle - 1)];
+        const std::size_t requiredBytes =
+            static_cast<std::size_t>(texture.width) * texture.height * 4;
+        if (byteCount != requiredBytes)
+            return false;
+
+        VkBuffer stagingBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+        VkCommandBuffer uploadCommand = VK_NULL_HANDLE;
+        const auto cleanup = [&]()
+        {
+            if (uploadCommand != VK_NULL_HANDLE)
+                vkFreeCommandBuffers(device, commandPool, 1, &uploadCommand);
+            if (stagingBuffer != VK_NULL_HANDLE)
+                vkDestroyBuffer(device, stagingBuffer, nullptr);
+            if (stagingMemory != VK_NULL_HANDLE)
+                vkFreeMemory(device, stagingMemory, nullptr);
+        };
+
+        if (!CreateBuffer(byteCount, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            stagingBuffer, stagingMemory))
+        {
+            cleanup();
+            return false;
+        }
+
+        void* mapped = nullptr;
+        VkResult result = vkMapMemory(device, stagingMemory, 0, byteCount, 0, &mapped);
+        if (result != VK_SUCCESS)
+        {
+            LogVulkanError("vkMapMemory(dynamic UI texture)", result);
+            cleanup();
+            return false;
+        }
+        std::memcpy(mapped, rgbaPixels, byteCount);
+        vkUnmapMemory(device, stagingMemory);
+
+        VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        allocation.commandPool = commandPool;
+        allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocation.commandBufferCount = 1;
+        result = vkAllocateCommandBuffers(device, &allocation, &uploadCommand);
+        VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (result == VK_SUCCESS)
+            result = vkBeginCommandBuffer(uploadCommand, &beginInfo);
+        if (result != VK_SUCCESS)
+        {
+            LogVulkanError("begin dynamic UI texture upload", result);
+            cleanup();
+            return false;
+        }
+
+        VkImageMemoryBarrier toTransfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        toTransfer.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toTransfer.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransfer.image = texture.image;
+        toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        toTransfer.subresourceRange.levelCount = 1;
+        toTransfer.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(uploadCommand, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+
+        VkBufferImageCopy copy{};
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageExtent = {texture.width, texture.height, 1};
+        vkCmdCopyBufferToImage(uploadCommand, stagingBuffer, texture.image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+        VkImageMemoryBarrier toShader{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toShader.image = texture.image;
+        toShader.subresourceRange = toTransfer.subresourceRange;
+        vkCmdPipelineBarrier(uploadCommand, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toShader);
+
+        result = vkEndCommandBuffer(uploadCommand);
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &uploadCommand;
+        if (result == VK_SUCCESS)
+            result = vkQueueSubmit(graphicsQueue, 1, &submit, VK_NULL_HANDLE);
+        if (result == VK_SUCCESS)
+            result = vkQueueWaitIdle(graphicsQueue);
+        if (result != VK_SUCCESS)
+            LogVulkanError("submit dynamic UI texture upload", result);
+        cleanup();
+        return result == VK_SUCCESS;
     }
 
     bool DrawFrame(std::uint64_t frameIndex, float elapsedSeconds)
     {
         return initialized && PresentFrame(frameIndex, elapsedSeconds);
+    }
+
+    void GetSurfaceSize(std::uint32_t& width, std::uint32_t& height) const
+    {
+        width = extent.width;
+        height = extent.height;
+    }
+
+    void BeginUiFrame()
+    {
+        uiVertices.clear();
+        uiBatches.clear();
+    }
+
+    void SubmitUiBatch(const AndroidVulkanUiVertex* vertices, std::size_t vertexCount,
+        AndroidVulkanUiPrimitive primitive, const AndroidVulkanUiScissor& scissor,
+        AndroidVulkanUiTexture texture, AndroidVulkanUiTextureMode textureMode)
+    {
+        if (!vertices || vertexCount == 0 || vertexCount > UINT32_MAX)
+            return;
+
+        UiBatch batch;
+        batch.firstVertex = static_cast<std::uint32_t>(uiVertices.size());
+        batch.vertexCount = static_cast<std::uint32_t>(vertexCount);
+        batch.primitive = primitive;
+        batch.scissor = scissor;
+        batch.texture = texture;
+        batch.textureMode = textureMode;
+        uiVertices.insert(uiVertices.end(), vertices, vertices + vertexCount);
+        uiBatches.push_back(batch);
     }
 
     void Shutdown()
@@ -543,7 +739,12 @@ private:
             createInfo.queueFamilyIndexCount = 2;
             createInfo.pQueueFamilyIndices = familyIndices;
         }
-        createInfo.preTransform = capabilities.currentTransform;
+        // SDL exposes both rendering and input coordinates in the current
+        // display orientation. Keep the swapchain canvas in that same space;
+        // selecting Android's currentTransform here rotates it once more.
+        createInfo.preTransform =
+            (capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) != 0
+            ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : capabilities.currentTransform;
         createInfo.compositeAlpha = compositeAlpha;
         createInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
         createInfo.clipped = VK_TRUE;
@@ -554,6 +755,11 @@ private:
             LogVulkanError("vkCreateSwapchainKHR", result);
             return false;
         }
+        __android_log_print(ANDROID_LOG_INFO, LogTag,
+            "Vulkan surface transform: current=0x%x selected=0x%x supported=0x%x",
+            static_cast<unsigned>(capabilities.currentTransform),
+            static_cast<unsigned>(createInfo.preTransform),
+            static_cast<unsigned>(capabilities.supportedTransforms));
 
         vkGetSwapchainImagesKHR(device, swapchain, &imageCount, nullptr);
         swapchainImages.resize(imageCount);
@@ -586,8 +792,370 @@ private:
         return true;
     }
 
+    std::uint32_t FindMemoryType(std::uint32_t typeBits, VkMemoryPropertyFlags required) const
+    {
+        VkPhysicalDeviceMemoryProperties properties{};
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &properties);
+        for (std::uint32_t index = 0; index < properties.memoryTypeCount; ++index)
+        {
+            if ((typeBits & (1u << index)) != 0 &&
+                (properties.memoryTypes[index].propertyFlags & required) == required)
+            {
+                return index;
+            }
+        }
+        return UINT32_MAX;
+    }
+
+    bool EnsureUiVertexBuffer(std::size_t requiredBytes)
+    {
+        if (requiredBytes <= uiVertexCapacity)
+            return true;
+
+        if (uiVertexBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, uiVertexBuffer, nullptr);
+        if (uiVertexMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device, uiVertexMemory, nullptr);
+        uiVertexBuffer = VK_NULL_HANDLE;
+        uiVertexMemory = VK_NULL_HANDLE;
+        uiVertexCapacity = 0;
+
+        std::size_t capacity = 64 * 1024;
+        while (capacity < requiredBytes)
+            capacity *= 2;
+
+        VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bufferInfo.size = capacity;
+        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VkResult result = vkCreateBuffer(device, &bufferInfo, nullptr, &uiVertexBuffer);
+        if (result != VK_SUCCESS)
+        {
+            LogVulkanError("vkCreateBuffer(UI)", result);
+            return false;
+        }
+
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device, uiVertexBuffer, &requirements);
+        const std::uint32_t memoryType = FindMemoryType(requirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (memoryType == UINT32_MAX)
+        {
+            __android_log_write(ANDROID_LOG_ERROR, LogTag, "No host-coherent Vulkan memory for UI vertices");
+            return false;
+        }
+
+        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocation.allocationSize = requirements.size;
+        allocation.memoryTypeIndex = memoryType;
+        result = vkAllocateMemory(device, &allocation, nullptr, &uiVertexMemory);
+        if (result == VK_SUCCESS)
+            result = vkBindBufferMemory(device, uiVertexBuffer, uiVertexMemory, 0);
+        if (result != VK_SUCCESS)
+        {
+            LogVulkanError("UI vertex memory allocation", result);
+            return false;
+        }
+        uiVertexCapacity = capacity;
+        return true;
+    }
+
+    bool CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memoryProperties,
+        VkBuffer& buffer, VkDeviceMemory& memory)
+    {
+        VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bufferInfo.size = size;
+        bufferInfo.usage = usage;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VkResult result = vkCreateBuffer(device, &bufferInfo, nullptr, &buffer);
+        if (result != VK_SUCCESS)
+        {
+            LogVulkanError("vkCreateBuffer(texture staging)", result);
+            return false;
+        }
+
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device, buffer, &requirements);
+        const std::uint32_t memoryType = FindMemoryType(requirements.memoryTypeBits, memoryProperties);
+        if (memoryType == UINT32_MAX)
+            return false;
+
+        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocation.allocationSize = requirements.size;
+        allocation.memoryTypeIndex = memoryType;
+        result = vkAllocateMemory(device, &allocation, nullptr, &memory);
+        if (result == VK_SUCCESS)
+            result = vkBindBufferMemory(device, buffer, memory, 0);
+        if (result != VK_SUCCESS)
+        {
+            LogVulkanError("texture staging memory", result);
+            return false;
+        }
+        return true;
+    }
+
+    bool CreateUiDescriptors()
+    {
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding = 0;
+        binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        binding.descriptorCount = 1;
+        binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        layoutInfo.bindingCount = 1;
+        layoutInfo.pBindings = &binding;
+        VkResult result = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &uiDescriptorSetLayout);
+        if (result != VK_SUCCESS)
+        {
+            LogVulkanError("vkCreateDescriptorSetLayout(UI)", result);
+            return false;
+        }
+
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSize.descriptorCount = 4096;
+        VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        poolInfo.maxSets = 4096;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        result = vkCreateDescriptorPool(device, &poolInfo, nullptr, &uiDescriptorPool);
+        if (result != VK_SUCCESS)
+        {
+            LogVulkanError("vkCreateDescriptorPool(UI)", result);
+            return false;
+        }
+
+        VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.maxLod = 0.0f;
+        result = vkCreateSampler(device, &samplerInfo, nullptr, &uiSampler);
+        if (result != VK_SUCCESS)
+        {
+            LogVulkanError("vkCreateSampler(UI)", result);
+            return false;
+        }
+        return true;
+    }
+
+    bool UploadUiTexture(std::uint32_t width, std::uint32_t height, const std::uint8_t* pixels,
+        std::size_t byteCount, UiTexture& texture)
+    {
+        VkBuffer stagingBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+        VkCommandBuffer uploadCommand = VK_NULL_HANDLE;
+        const auto cleanupStaging = [&]()
+        {
+            if (uploadCommand != VK_NULL_HANDLE)
+                vkFreeCommandBuffers(device, commandPool, 1, &uploadCommand);
+            if (stagingBuffer != VK_NULL_HANDLE)
+                vkDestroyBuffer(device, stagingBuffer, nullptr);
+            if (stagingMemory != VK_NULL_HANDLE)
+                vkFreeMemory(device, stagingMemory, nullptr);
+        };
+        const auto cleanupTexture = [&]()
+        {
+            if (texture.view != VK_NULL_HANDLE)
+                vkDestroyImageView(device, texture.view, nullptr);
+            if (texture.image != VK_NULL_HANDLE)
+                vkDestroyImage(device, texture.image, nullptr);
+            if (texture.memory != VK_NULL_HANDLE)
+                vkFreeMemory(device, texture.memory, nullptr);
+            texture = {};
+        };
+
+        if (!CreateBuffer(byteCount, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            stagingBuffer, stagingMemory))
+        {
+            cleanupStaging();
+            return false;
+        }
+
+        void* mapped = nullptr;
+        VkResult result = vkMapMemory(device, stagingMemory, 0, byteCount, 0, &mapped);
+        if (result != VK_SUCCESS)
+        {
+            LogVulkanError("vkMapMemory(texture staging)", result);
+            cleanupStaging();
+            return false;
+        }
+        std::memcpy(mapped, pixels, byteCount);
+        vkUnmapMemory(device, stagingMemory);
+
+        VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        imageInfo.extent = {width, height, 1};
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        result = vkCreateImage(device, &imageInfo, nullptr, &texture.image);
+        if (result != VK_SUCCESS)
+        {
+            LogVulkanError("vkCreateImage(UI)", result);
+            cleanupStaging();
+            return false;
+        }
+
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(device, texture.image, &requirements);
+        const std::uint32_t memoryType = FindMemoryType(
+            requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (memoryType == UINT32_MAX)
+        {
+            cleanupStaging();
+            cleanupTexture();
+            return false;
+        }
+        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocation.allocationSize = requirements.size;
+        allocation.memoryTypeIndex = memoryType;
+        result = vkAllocateMemory(device, &allocation, nullptr, &texture.memory);
+        if (result == VK_SUCCESS)
+            result = vkBindImageMemory(device, texture.image, texture.memory, 0);
+        if (result != VK_SUCCESS)
+        {
+            LogVulkanError("UI image memory", result);
+            cleanupStaging();
+            cleanupTexture();
+            return false;
+        }
+
+        VkCommandBufferAllocateInfo commandAllocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        commandAllocation.commandPool = commandPool;
+        commandAllocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        commandAllocation.commandBufferCount = 1;
+        result = vkAllocateCommandBuffers(device, &commandAllocation, &uploadCommand);
+        VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (result == VK_SUCCESS)
+            result = vkBeginCommandBuffer(uploadCommand, &beginInfo);
+        if (result != VK_SUCCESS)
+        {
+            LogVulkanError("begin UI texture upload", result);
+            cleanupStaging();
+            cleanupTexture();
+            return false;
+        }
+
+        VkImageMemoryBarrier toTransfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        toTransfer.srcAccessMask = 0;
+        toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransfer.image = texture.image;
+        toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        toTransfer.subresourceRange.levelCount = 1;
+        toTransfer.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(uploadCommand, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+
+        VkBufferImageCopy copy{};
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageExtent = {width, height, 1};
+        vkCmdCopyBufferToImage(uploadCommand, stagingBuffer, texture.image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+        VkImageMemoryBarrier toShader{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toShader.image = texture.image;
+        toShader.subresourceRange = toTransfer.subresourceRange;
+        vkCmdPipelineBarrier(uploadCommand, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toShader);
+
+        result = vkEndCommandBuffer(uploadCommand);
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &uploadCommand;
+        if (result == VK_SUCCESS)
+            result = vkQueueSubmit(graphicsQueue, 1, &submit, VK_NULL_HANDLE);
+        if (result == VK_SUCCESS)
+            result = vkQueueWaitIdle(graphicsQueue);
+        if (result != VK_SUCCESS)
+        {
+            LogVulkanError("submit UI texture upload", result);
+            cleanupStaging();
+            cleanupTexture();
+            return false;
+        }
+        cleanupStaging();
+
+        VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        viewInfo.image = texture.image;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.layerCount = 1;
+        result = vkCreateImageView(device, &viewInfo, nullptr, &texture.view);
+        if (result != VK_SUCCESS)
+        {
+            LogVulkanError("vkCreateImageView(UI)", result);
+            cleanupTexture();
+            return false;
+        }
+
+        VkDescriptorSetAllocateInfo descriptorAllocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        descriptorAllocation.descriptorPool = uiDescriptorPool;
+        descriptorAllocation.descriptorSetCount = 1;
+        descriptorAllocation.pSetLayouts = &uiDescriptorSetLayout;
+        result = vkAllocateDescriptorSets(device, &descriptorAllocation, &texture.descriptorSet);
+        if (result != VK_SUCCESS)
+        {
+            LogVulkanError("vkAllocateDescriptorSets(UI)", result);
+            cleanupTexture();
+            return false;
+        }
+        VkDescriptorImageInfo descriptorImage{};
+        descriptorImage.sampler = uiSampler;
+        descriptorImage.imageView = texture.view;
+        descriptorImage.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = texture.descriptorSet;
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &descriptorImage;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        texture.width = width;
+        texture.height = height;
+        return true;
+    }
+
+    bool CreateFallbackTexture()
+    {
+        const std::uint8_t white[] = {255, 255, 255, 255};
+        fallbackTexture = CreateUiTexture("__openxray_white__", 1, 1, white, sizeof(white));
+        return fallbackTexture != 0;
+    }
+
+    VkDescriptorSet GetUiDescriptor(AndroidVulkanUiTexture handle) const
+    {
+        return handle == 0 || handle > uiTextures.size()
+            ? VK_NULL_HANDLE : uiTextures[static_cast<std::size_t>(handle - 1)].descriptorSet;
+    }
+
     bool CreateGraphicsPipeline()
     {
+        if (!CreateUiDescriptors())
+            return false;
         swapchainImageViews.reserve(swapchainImages.size());
         for (const VkImage image : swapchainImages)
         {
@@ -696,10 +1264,24 @@ private:
         shaderStages[1].module = fragmentShader;
         shaderStages[1].pName = "main";
 
+        VkVertexInputBindingDescription binding{};
+        binding.binding = 0;
+        binding.stride = sizeof(AndroidVulkanUiVertex);
+        binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        VkVertexInputAttributeDescription attributes[3]{};
+        attributes[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,
+            static_cast<std::uint32_t>(offsetof(AndroidVulkanUiVertex, x))};
+        attributes[1] = {1, 0, VK_FORMAT_R32_UINT,
+            static_cast<std::uint32_t>(offsetof(AndroidVulkanUiVertex, color))};
+        attributes[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,
+            static_cast<std::uint32_t>(offsetof(AndroidVulkanUiVertex, u))};
         VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        vertexInput.vertexBindingDescriptionCount = 1;
+        vertexInput.pVertexBindingDescriptions = &binding;
+        vertexInput.vertexAttributeDescriptionCount = 3;
+        vertexInput.pVertexAttributeDescriptions = attributes;
         VkPipelineInputAssemblyStateCreateInfo inputAssembly{
             VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
         VkViewport viewport{};
         viewport.width = static_cast<float>(extent.width);
@@ -726,12 +1308,26 @@ private:
         VkPipelineColorBlendAttachmentState blendAttachment{};
         blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        blendAttachment.blendEnable = VK_TRUE;
+        blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
         VkPipelineColorBlendStateCreateInfo colorBlending{
             VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
         colorBlending.attachmentCount = 1;
         colorBlending.pAttachments = &blendAttachment;
 
+        VkPushConstantRange pushConstant{};
+        pushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        pushConstant.size = sizeof(UiPushConstants);
         VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        layoutInfo.setLayoutCount = 1;
+        layoutInfo.pSetLayouts = &uiDescriptorSetLayout;
+        layoutInfo.pushConstantRangeCount = 1;
+        layoutInfo.pPushConstantRanges = &pushConstant;
         result = vkCreatePipelineLayout(device, &layoutInfo, nullptr, &pipelineLayout);
         if (result != VK_SUCCESS)
         {
@@ -753,7 +1349,26 @@ private:
         pipelineInfo.layout = pipelineLayout;
         pipelineInfo.renderPass = renderPass;
         pipelineInfo.subpass = 0;
-        result = vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &graphicsPipeline);
+        VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+        dynamicState.dynamicStateCount = 1;
+        dynamicState.pDynamicStates = dynamicStates;
+        pipelineInfo.pDynamicState = &dynamicState;
+
+        const VkPrimitiveTopology topologies[] = {
+            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
+            VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+            VK_PRIMITIVE_TOPOLOGY_LINE_STRIP
+        };
+        for (std::size_t index = 0; index < 4; ++index)
+        {
+            inputAssembly.topology = topologies[index];
+            result = vkCreateGraphicsPipelines(
+                device, pipelineCache, 1, &pipelineInfo, nullptr, &graphicsPipelines[index]);
+            if (result != VK_SUCCESS)
+                break;
+        }
         vkDestroyShaderModule(device, fragmentShader, nullptr);
         vkDestroyShaderModule(device, vertexShader, nullptr);
         if (result != VK_SUCCESS)
@@ -801,6 +1416,22 @@ private:
 
     bool PresentFrame(std::uint64_t frameIndex, float elapsedSeconds)
     {
+        const std::size_t uiBytes = uiVertices.size() * sizeof(AndroidVulkanUiVertex);
+        if (uiBytes != 0)
+        {
+            if (!EnsureUiVertexBuffer(uiBytes))
+                return false;
+            void* mapped = nullptr;
+            VkResult mapResult = vkMapMemory(device, uiVertexMemory, 0, uiBytes, 0, &mapped);
+            if (mapResult != VK_SUCCESS)
+            {
+                LogVulkanError("vkMapMemory(UI)", mapResult);
+                return false;
+            }
+            std::memcpy(mapped, uiVertices.data(), uiBytes);
+            vkUnmapMemory(device, uiVertexMemory);
+        }
+
         VkResult result = vkResetCommandPool(device, commandPool, 0);
         if (result != VK_SUCCESS)
         {
@@ -826,10 +1457,7 @@ private:
             return false;
         }
 
-        // A small pulse makes it visible that the renderer remains active after
-        // the first presentation instead of leaving one stale swapchain image.
-        const float pulse = 0.5f + 0.5f * std::sin(elapsedSeconds * 1.25f);
-        const VkClearValue clear{{{0.025f + pulse * 0.02f, 0.07f + pulse * 0.035f, 0.045f, 1.0f}}};
+        const VkClearValue clear{{{0.015f, 0.02f, 0.018f, 1.0f}}};
         VkRenderPassBeginInfo renderPassBegin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         renderPassBegin.renderPass = renderPass;
         renderPassBegin.framebuffer = swapchainFramebuffers[imageIndex];
@@ -837,8 +1465,44 @@ private:
         renderPassBegin.clearValueCount = 1;
         renderPassBegin.pClearValues = &clear;
         vkCmdBeginRenderPass(commandBuffer, &renderPassBegin, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        if (!uiVertices.empty())
+        {
+            const VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, &uiVertexBuffer, &offset);
+            for (const UiBatch& batch : uiBatches)
+            {
+                const std::size_t pipelineIndex = static_cast<std::size_t>(batch.primitive);
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[pipelineIndex]);
+                const VkDescriptorSet descriptor = GetUiDescriptor(batch.texture);
+                if (descriptor == VK_NULL_HANDLE)
+                    continue;
+                const UiPushConstants constants{
+                    static_cast<float>(extent.width), static_cast<float>(extent.height),
+                    static_cast<std::uint32_t>(batch.textureMode), 0};
+                vkCmdPushConstants(commandBuffer, pipelineLayout,
+                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                    0, sizeof(constants), &constants);
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    pipelineLayout, 0, 1, &descriptor, 0, nullptr);
+                VkRect2D batchScissor{{0, 0}, extent};
+                if (batch.scissor.enabled)
+                {
+                    const std::int32_t left = std::clamp(batch.scissor.x, 0, static_cast<std::int32_t>(extent.width));
+                    const std::int32_t top = std::clamp(batch.scissor.y, 0, static_cast<std::int32_t>(extent.height));
+                    const std::uint32_t right = std::min(extent.width,
+                        static_cast<std::uint32_t>(left) + batch.scissor.width);
+                    const std::uint32_t bottom = std::min(extent.height,
+                        static_cast<std::uint32_t>(top) + batch.scissor.height);
+                    batchScissor.offset = {left, top};
+                    batchScissor.extent = {right - static_cast<std::uint32_t>(left),
+                        bottom - static_cast<std::uint32_t>(top)};
+                }
+                if (batchScissor.extent.width == 0 || batchScissor.extent.height == 0)
+                    continue;
+                vkCmdSetScissor(commandBuffer, 0, 1, &batchScissor);
+                vkCmdDraw(commandBuffer, batch.vertexCount, 1, batch.firstVertex, 0);
+            }
+        }
         vkCmdEndRenderPass(commandBuffer);
 
         result = vkEndCommandBuffer(commandBuffer);
@@ -884,17 +1548,80 @@ private:
             return false;
         }
 
+        if (!loggedComplexUi && uiBatches.size() > 10)
+        {
+            loggedComplexUi = true;
+            __android_log_print(ANDROID_LOG_INFO, LogTag,
+                "Complex UI frame geometry: frame=%llu surface=%ux%u vertices=%zu batches=%zu",
+                static_cast<unsigned long long>(frameIndex), extent.width, extent.height,
+                uiVertices.size(), uiBatches.size());
+            for (std::size_t index = 0; index < uiBatches.size(); ++index)
+            {
+                const UiBatch& batch = uiBatches[index];
+                const std::size_t first = batch.firstVertex;
+                const std::size_t end = std::min(uiVertices.size(), first + batch.vertexCount);
+                if (first >= end)
+                    continue;
+
+                float minX = std::numeric_limits<float>::max();
+                float minY = std::numeric_limits<float>::max();
+                float maxX = std::numeric_limits<float>::lowest();
+                float maxY = std::numeric_limits<float>::lowest();
+                float minU = std::numeric_limits<float>::max();
+                float minV = std::numeric_limits<float>::max();
+                float maxU = std::numeric_limits<float>::lowest();
+                float maxV = std::numeric_limits<float>::lowest();
+                for (std::size_t vertexIndex = first; vertexIndex < end; ++vertexIndex)
+                {
+                    const AndroidVulkanUiVertex& vertex = uiVertices[vertexIndex];
+                    minX = std::min(minX, vertex.x);
+                    minY = std::min(minY, vertex.y);
+                    maxX = std::max(maxX, vertex.x);
+                    maxY = std::max(maxY, vertex.y);
+                    minU = std::min(minU, vertex.u);
+                    minV = std::min(minV, vertex.v);
+                    maxU = std::max(maxU, vertex.u);
+                    maxV = std::max(maxV, vertex.v);
+                }
+
+                const char* textureName = "<fallback>";
+                if (batch.texture > 0 && batch.texture <= uiTextures.size())
+                    textureName = uiTextures[static_cast<std::size_t>(batch.texture - 1)].name.c_str();
+                __android_log_print(ANDROID_LOG_INFO, LogTag,
+                    "Complex UI batch %zu: texture=%llu ''%s'' mode=%u vertices=%u "
+                    "bounds=(%.1f,%.1f)-(%.1f,%.1f) uv=(%.3f,%.3f)-(%.3f,%.3f) "
+                    "scissor=%d,(%d,%d %ux%u)",
+                    index, static_cast<unsigned long long>(batch.texture), textureName,
+                    static_cast<unsigned>(batch.textureMode), batch.vertexCount,
+                    minX, minY, maxX, maxY, minU, minV, maxU, maxV,
+                    batch.scissor.enabled ? 1 : 0, batch.scissor.x, batch.scissor.y,
+                    batch.scissor.width, batch.scissor.height);
+            }
+        }
+
         if (frameIndex == 1)
         {
             __android_log_print(ANDROID_LOG_INFO, LogTag,
-                "Presented first persistent Vulkan host frame (%ux%u, format %d, 3 vertices)",
-                extent.width, extent.height, surfaceFormat.format);
+                "Presented first OpenXRay Vulkan frame (%ux%u, format %d, %zu UI vertices in %zu batches)",
+                extent.width, extent.height, surfaceFormat.format, uiVertices.size(), uiBatches.size());
+            for (std::size_t index = 0; index < uiBatches.size(); ++index)
+            {
+                const UiBatch& batch = uiBatches[index];
+                if (batch.firstVertex >= uiVertices.size())
+                    continue;
+                const AndroidVulkanUiVertex& vertex = uiVertices[batch.firstVertex];
+                __android_log_print(ANDROID_LOG_INFO, LogTag,
+                    "First-frame UI batch %zu: texture=%llu mode=%u vertices=%u first=(%.1f,%.1f uv=%.3f,%.3f color=0x%08x)",
+                    index, static_cast<unsigned long long>(batch.texture),
+                    static_cast<unsigned>(batch.textureMode), batch.vertexCount,
+                    vertex.x, vertex.y, vertex.u, vertex.v, vertex.color);
+            }
         }
         else if ((frameIndex % 300) == 0)
         {
             __android_log_print(ANDROID_LOG_DEBUG, LogTag,
-                "Vulkan host frame loop alive (frame %llu)",
-                static_cast<unsigned long long>(frameIndex));
+                "Vulkan frame loop alive (frame %llu, %zu UI vertices in %zu batches)",
+                static_cast<unsigned long long>(frameIndex), uiVertices.size(), uiBatches.size());
         }
         return true;
     }
@@ -938,10 +1665,36 @@ private:
             vkDestroySemaphore(device, imageAvailable, nullptr);
         if (device != VK_NULL_HANDLE && commandPool != VK_NULL_HANDLE)
             vkDestroyCommandPool(device, commandPool, nullptr);
-        if (device != VK_NULL_HANDLE && graphicsPipeline != VK_NULL_HANDLE)
-            vkDestroyPipeline(device, graphicsPipeline, nullptr);
+        if (device != VK_NULL_HANDLE)
+        {
+            for (VkPipeline pipeline : graphicsPipelines)
+                if (pipeline != VK_NULL_HANDLE)
+                    vkDestroyPipeline(device, pipeline, nullptr);
+        }
+        if (device != VK_NULL_HANDLE && uiVertexBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, uiVertexBuffer, nullptr);
+        if (device != VK_NULL_HANDLE && uiVertexMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device, uiVertexMemory, nullptr);
+        if (device != VK_NULL_HANDLE)
+        {
+            for (const UiTexture& texture : uiTextures)
+            {
+                if (texture.view != VK_NULL_HANDLE)
+                    vkDestroyImageView(device, texture.view, nullptr);
+                if (texture.image != VK_NULL_HANDLE)
+                    vkDestroyImage(device, texture.image, nullptr);
+                if (texture.memory != VK_NULL_HANDLE)
+                    vkFreeMemory(device, texture.memory, nullptr);
+            }
+        }
         if (device != VK_NULL_HANDLE && pipelineLayout != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        if (device != VK_NULL_HANDLE && uiSampler != VK_NULL_HANDLE)
+            vkDestroySampler(device, uiSampler, nullptr);
+        if (device != VK_NULL_HANDLE && uiDescriptorPool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(device, uiDescriptorPool, nullptr);
+        if (device != VK_NULL_HANDLE && uiDescriptorSetLayout != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device, uiDescriptorSetLayout, nullptr);
         if (device != VK_NULL_HANDLE)
         {
             for (const VkFramebuffer framebuffer : swapchainFramebuffers)
@@ -969,8 +1722,18 @@ private:
         imageAvailable = VK_NULL_HANDLE;
         commandBuffer = VK_NULL_HANDLE;
         commandPool = VK_NULL_HANDLE;
-        graphicsPipeline = VK_NULL_HANDLE;
+        for (VkPipeline& pipeline : graphicsPipelines)
+            pipeline = VK_NULL_HANDLE;
+        uiVertexBuffer = VK_NULL_HANDLE;
+        uiVertexMemory = VK_NULL_HANDLE;
+        uiVertexCapacity = 0;
+        uiTextures.clear();
+        uiTextureByName.clear();
+        fallbackTexture = 0;
         pipelineLayout = VK_NULL_HANDLE;
+        uiSampler = VK_NULL_HANDLE;
+        uiDescriptorPool = VK_NULL_HANDLE;
+        uiDescriptorSetLayout = VK_NULL_HANDLE;
         swapchainFramebuffers.clear();
         renderPass = VK_NULL_HANDLE;
         swapchainImageViews.clear();
@@ -1004,8 +1767,20 @@ private:
     std::vector<VkImageView> swapchainImageViews;
     std::vector<VkFramebuffer> swapchainFramebuffers;
     VkRenderPass renderPass = VK_NULL_HANDLE;
+    VkDescriptorSetLayout uiDescriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool uiDescriptorPool = VK_NULL_HANDLE;
+    VkSampler uiSampler = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkPipeline graphicsPipeline = VK_NULL_HANDLE;
+    VkPipeline graphicsPipelines[4]{};
+    VkBuffer uiVertexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory uiVertexMemory = VK_NULL_HANDLE;
+    std::size_t uiVertexCapacity{};
+    std::vector<AndroidVulkanUiVertex> uiVertices;
+    std::vector<UiBatch> uiBatches;
+    std::vector<UiTexture> uiTextures;
+    std::unordered_map<std::string, AndroidVulkanUiTexture> uiTextureByName;
+    AndroidVulkanUiTexture fallbackTexture{};
+    bool loggedComplexUi{};
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
@@ -1030,9 +1805,38 @@ bool AndroidVulkanRenderer::Initialize(SDL_Window* window, const char* appFilesP
     return implementation->renderer.Initialize(window, appFilesPath);
 }
 
+AndroidVulkanUiTexture AndroidVulkanRenderer::CreateUiTexture(const char* name, std::uint32_t width,
+    std::uint32_t height, const std::uint8_t* rgbaPixels, std::size_t byteCount)
+{
+    return implementation->renderer.CreateUiTexture(name, width, height, rgbaPixels, byteCount);
+}
+
+bool AndroidVulkanRenderer::UpdateUiTexture(AndroidVulkanUiTexture texture,
+    const std::uint8_t* rgbaPixels, std::size_t byteCount)
+{
+    return implementation->renderer.UpdateUiTexture(texture, rgbaPixels, byteCount);
+}
+
+void AndroidVulkanRenderer::BeginUiFrame()
+{
+    implementation->renderer.BeginUiFrame();
+}
+
+void AndroidVulkanRenderer::SubmitUiBatch(const AndroidVulkanUiVertex* vertices, std::size_t vertexCount,
+    AndroidVulkanUiPrimitive primitive, const AndroidVulkanUiScissor& scissor,
+    AndroidVulkanUiTexture texture, AndroidVulkanUiTextureMode textureMode)
+{
+    implementation->renderer.SubmitUiBatch(vertices, vertexCount, primitive, scissor, texture, textureMode);
+}
+
 bool AndroidVulkanRenderer::DrawFrame(std::uint64_t frameIndex, float elapsedSeconds)
 {
     return implementation->renderer.DrawFrame(frameIndex, elapsedSeconds);
+}
+
+void AndroidVulkanRenderer::GetSurfaceSize(std::uint32_t& width, std::uint32_t& height) const
+{
+    implementation->renderer.GetSurfaceSize(width, height);
 }
 
 void AndroidVulkanRenderer::Shutdown()

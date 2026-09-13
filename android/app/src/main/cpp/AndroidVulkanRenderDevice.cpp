@@ -1,5 +1,10 @@
 #include "AndroidVulkanRenderDevice.hpp"
 
+#include "Include/xrRender/ParticleCustom.h"
+#include "Include/xrRender/RenderVisual.h"
+#include "xrEngine/IGame_Persistent.h"
+#include "xrEngine/vis_common.h"
+
 #include <SDL.h>
 #include <SDL_vulkan.h>
 #include <android/log.h>
@@ -7,6 +12,47 @@
 namespace
 {
 constexpr const char* LogTag = "OpenXRay";
+
+// World particles are not drawn during Stage 6, but level startup requires
+// a valid particle lifecycle object.
+class AndroidBootstrapParticleVisual final : public IRenderVisual, public IParticleCustom
+{
+public:
+    explicit AndroidBootstrapParticleVisual(pcstr particleName)
+        : name(particleName ? particleName : "")
+    {
+        visibility.clear();
+    }
+
+    vis_data& getVisData() override { return visibility; }
+    u32 getType() const override { return 0; }
+#ifdef DEBUG
+    shared_str getDebugName() override { return name; }
+#endif
+    IParticleCustom* dcast_ParticleCustom() override { return this; }
+
+    void OnDeviceCreate() override {}
+    void OnDeviceDestroy() override {}
+    void UpdateParent(const Fmatrix& transform, const Fvector&, BOOL) override
+    {
+        visibility.sphere.P.set(transform.c);
+    }
+    void OnFrame(u32) override {}
+    void Play() override { playing = true; }
+    void Stop(BOOL) override { playing = false; }
+    BOOL IsPlaying() override { return playing ? TRUE : FALSE; }
+    u32 ParticlesCount() override { return 0; }
+    float GetTimeLimit() override { return 1.0f; }
+    const shared_str Name() override { return name; }
+    void SetHudMode(BOOL value) override { hudMode = value != FALSE; }
+    BOOL GetHudMode() override { return hudMode ? TRUE : FALSE; }
+
+private:
+    vis_data visibility;
+    shared_str name;
+    bool playing{};
+    bool hudMode{};
+};
 }
 
 AndroidVulkanRenderDevice::AndroidVulkanRenderDevice(const char* path) : appFilesPath(path ? path : "")
@@ -54,11 +100,19 @@ IRender_ObjectSpecific* AndroidVulkanRenderDevice::ros_create(IRenderable*) { re
 void AndroidVulkanRenderDevice::ros_destroy(IRender_ObjectSpecific*& object) { object = nullptr; }
 IRender_Light* AndroidVulkanRenderDevice::light_create() { return nullptr; }
 IRender_Glow* AndroidVulkanRenderDevice::glow_create() { return nullptr; }
-IRenderVisual* AndroidVulkanRenderDevice::model_CreateParticles(pcstr) { return nullptr; }
+IRenderVisual* AndroidVulkanRenderDevice::model_CreateParticles(pcstr name)
+{
+    __android_log_print(ANDROID_LOG_INFO, LogTag,
+        "Android bootstrap particle visual created: %s", name ? name : "<null>");
+    return xr_new<AndroidBootstrapParticleVisual>(name);
+}
 IRenderVisual* AndroidVulkanRenderDevice::model_Create(pcstr, IReader*) { return nullptr; }
 IRenderVisual* AndroidVulkanRenderDevice::model_CreateChild(pcstr, IReader*) { return nullptr; }
 IRenderVisual* AndroidVulkanRenderDevice::model_Duplicate(IRenderVisual*) { return nullptr; }
-void AndroidVulkanRenderDevice::model_Delete(IRenderVisual*& visual, bool) { visual = nullptr; }
+void AndroidVulkanRenderDevice::model_Delete(IRenderVisual*& visual, bool)
+{
+    xr_delete(visual);
+}
 void AndroidVulkanRenderDevice::model_Logging(bool) {}
 void AndroidVulkanRenderDevice::models_Prefetch() {}
 void AndroidVulkanRenderDevice::models_Clear(bool) {}
@@ -67,7 +121,14 @@ bool AndroidVulkanRenderDevice::occ_visible(Fbox&) { return true; }
 bool AndroidVulkanRenderDevice::occ_visible(sPoly&) { return true; }
 void AndroidVulkanRenderDevice::Calculate() {}
 void AndroidVulkanRenderDevice::Render() {}
-void AndroidVulkanRenderDevice::RenderMenu() {}
+void AndroidVulkanRenderDevice::RenderMenu()
+{
+    // The ShoC main menu normally renders into the desktop renderer's
+    // post-process UI target. There is no intermediate target in the Android
+    // bootstrap yet, so submit that main pass directly to this frame.
+    if (g_pGamePersistent)
+        g_pGamePersistent->OnRenderPPUI_main();
+}
 void AndroidVulkanRenderDevice::BeforeWorldRender() {}
 void AndroidVulkanRenderDevice::AfterWorldRender() {}
 void AndroidVulkanRenderDevice::Screenshot(ScreenshotMode, pcstr) {}
@@ -111,6 +172,17 @@ void AndroidVulkanRenderDevice::Create(
     UpdateDimensions(window, width, height, halfWidth, halfHeight);
     failed = !renderer.Initialize(window, appFilesPath.c_str());
     initialized = !failed;
+    if (initialized)
+    {
+        // SDL_SetWindowSize may briefly report the portrait vid_mode restored
+        // from user.ltx while Android is enforcing sensorLandscape. The
+        // swapchain extent is authoritative once its surface is created.
+        renderer.GetSurfaceSize(width, height);
+        halfWidth = static_cast<float>(width) * 0.5f;
+        halfHeight = static_cast<float>(height) * 0.5f;
+        __android_log_print(ANDROID_LOG_INFO, LogTag,
+            "Android render dimensions synchronized to swapchain: %ux%u", width, height);
+    }
     frameIndex = 0;
     frameLoopStart = SDL_GetPerformanceCounter();
 
@@ -148,11 +220,19 @@ void AndroidVulkanRenderDevice::ResourcesDestroyNecessaryTextures() {}
 void AndroidVulkanRenderDevice::ResourcesStoreNecessaryTextures() {}
 void AndroidVulkanRenderDevice::ResourcesDumpMemoryUsage() {}
 bool AndroidVulkanRenderDevice::HWSupportsShaderYUV2RGB() { return false; }
-DeviceState AndroidVulkanRenderDevice::GetDeviceState() { return failed ? DeviceState::Lost : DeviceState::Normal; }
+DeviceState AndroidVulkanRenderDevice::GetDeviceState()
+{
+    // A surface destroyed during Android pause invalidates the swapchain. A
+    // failed frame on an otherwise initialized renderer is recoverable through
+    // CRenderDevice::Reset once SDL has supplied the replacement surface.
+    if (failed)
+        return initialized ? DeviceState::NeedReset : DeviceState::Lost;
+    return DeviceState::Normal;
+}
 bool AndroidVulkanRenderDevice::GetForceGPU_REF() { return false; }
 u32 AndroidVulkanRenderDevice::GetCacheStatPolys() { return 1; }
 void AndroidVulkanRenderDevice::OnCameraUpdated() {}
-void AndroidVulkanRenderDevice::Begin() {}
+void AndroidVulkanRenderDevice::Begin() { renderer.BeginUiFrame(); }
 void AndroidVulkanRenderDevice::Clear() {}
 
 void AndroidVulkanRenderDevice::End()
@@ -172,3 +252,22 @@ void AndroidVulkanRenderDevice::SetCacheXform(Fmatrix&, Fmatrix&) {}
 void AndroidVulkanRenderDevice::OnAssetsChanged() {}
 IRender::RenderContext AndroidVulkanRenderDevice::GetCurrentContext() const { return PrimaryContext; }
 void AndroidVulkanRenderDevice::MakeContextCurrent(RenderContext) {}
+
+void AndroidVulkanRenderDevice::SubmitUiBatch(const AndroidVulkanUiVertex* vertices, std::size_t vertexCount,
+    AndroidVulkanUiPrimitive primitive, const AndroidVulkanUiScissor& scissor,
+    AndroidVulkanUiTexture texture, AndroidVulkanUiTextureMode textureMode)
+{
+    renderer.SubmitUiBatch(vertices, vertexCount, primitive, scissor, texture, textureMode);
+}
+
+AndroidVulkanUiTexture AndroidVulkanRenderDevice::CreateUiTexture(const char* name, std::uint32_t width,
+    std::uint32_t height, const std::uint8_t* rgbaPixels, std::size_t byteCount)
+{
+    return renderer.CreateUiTexture(name, width, height, rgbaPixels, byteCount);
+}
+
+bool AndroidVulkanRenderDevice::UpdateUiTexture(AndroidVulkanUiTexture texture,
+    const std::uint8_t* rgbaPixels, std::size_t byteCount)
+{
+    return renderer.UpdateUiTexture(texture, rgbaPixels, byteCount);
+}

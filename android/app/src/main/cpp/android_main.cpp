@@ -92,10 +92,16 @@ bool PrepareFilesystemFixture(const char* appFilesPath, std::string& fsConfigPat
         "; OpenXRay-owned fixture; contains no game data.\n"
         "$app_data_root$ = true|false|$fs_root$|_appdata_\\\n"
         "$arch_dir$ = false|false|$fs_root$\n"
+        "$game_arch_mp$ = false|false|$fs_root$|mp\\\n"
+        "$arch_dir_levels$ = false|false|$fs_root$|levels\\\n"
+        "$arch_dir_resources$ = false|false|$fs_root$|resources\\\n"
+        "$arch_dir_localization$ = false|false|$fs_root$|localization\\\n"
+        "$arch_dir_patches$ = false|true|$fs_root$|patches\\\n"
         "$game_data$ = true|true|$fs_root$|gamedata\\\n"
         "$game_ai$ = true|true|$game_data$|ai\\\n"
         "$game_anims$ = true|true|$game_data$|anims\\\n"
         "$game_config$ = true|false|$game_data$|config\\\n"
+        "$game_dm$ = true|true|$game_data$|meshes\\\n"
         "$game_levels$ = true|true|$game_data$|levels\\\n"
         "$game_meshes$ = true|true|$game_data$|meshes\\\n"
         "$game_particles$ = true|true|$game_data$|particles\\\n"
@@ -104,11 +110,14 @@ bool PrepareFilesystemFixture(const char* appFilesPath, std::string& fsConfigPat
         "$game_sounds$ = true|true|$game_data$|sounds\\\n"
         "$game_spawn$ = true|true|$game_data$|spawns\\\n"
         "$game_textures$ = true|true|$game_data$|textures\\\n"
+        "$textures$ = true|true|$game_data$|textures\\\n"
+        "$level$ = false|false|$game_levels$\n"
         "$game_weather_effects$ = true|true|$game_config$|environment\\weather_effects\\\n"
         "$game_weathers$ = true|true|$game_config$|environment\\weathers\\\n"
         "$logs$ = true|false|$app_data_root$|logs\\\n"
         "$screenshots$ = true|false|$app_data_root$|screenshots\\\n"
-        "$game_saves$ = true|false|$app_data_root$|savedgames\\\n";
+        "$game_saves$ = true|false|$app_data_root$|savedgames\\\n"
+        "$downloads$ = false|false|$app_data_root$\n";
     static constexpr char Marker[] = "openxray-android-vfs-smoke-v1\n";
 
     fsConfigPath = root + "/fsgame.ltx";

@@ -20,11 +20,13 @@ class dxFontRender;
 } // namespace xray::render
 
 class IFontRender;
+class AndroidVulkanFontRenderAccess;
 
 class ENGINE_API CGameFont final : public IGameFont
 {
     friend class xray::render::render_r4::dxFontRender;
     friend class xray::render::render_gl::dxFontRender;
+    friend class AndroidVulkanFontRenderAccess;
 
 private:
     struct String

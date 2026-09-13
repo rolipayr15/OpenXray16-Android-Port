@@ -1,0 +1,75 @@
+diff --git a/src/GameSpy/common/linux/gsThreadLinux.c b/src/GameSpy/common/linux/gsThreadLinux.c
+index 1b9f1af..f14a30c 100644
+--- a/src/GameSpy/common/linux/gsThreadLinux.c
++++ b/src/GameSpy/common/linux/gsThreadLinux.c
+@@ -31,6 +31,13 @@ gsi_u32 gsiInterlockedDecrement(gsi_u32 * value)
+ 
+ int gsiStartThread(GSThreadFunc func, gsi_u32 theStackSize, void *arg, GSIThreadID * id)
+ {
++	#if defined(__ANDROID__)
++	// Bionic rejects the 4 KiB stack requested by the legacy DNS helper.
++	// Preserve the caller's intent while respecting Android's minimum.
++	if (theStackSize < PTHREAD_STACK_MIN)
++		theStackSize = PTHREAD_STACK_MIN;
++	#endif
++
+ 	pthread_attr_init(&id->attr);
+ 	pthread_attr_setstacksize(&id->attr, theStackSize);
+ 
+@@ -46,9 +53,17 @@ int gsiStartThread(GSThreadFunc func, gsi_u32 theStackSize, void *arg, GSIThread
+ 
+ void gsiCancelThread(GSIThreadID id)
+ {
++	#if defined(__ANDROID__)
++	// Android/Bionic intentionally does not provide pthread_cancel.  Waiting
++	// for the DNS worker keeps its handle alive until it has stopped touching
++	// it, which is safer than emulating asynchronous cancellation.
++	if (pthread_join(id.thread, NULL) != PTHREAD_NO_ERROR)
++	{
++		gsDebugFormat(GSIDebugCat_Common, GSIDebugType_Misc, GSIDebugLevel_WarmError,
++			"Failed to join cancelled thread\r\n");
++	}
++	#else
+ 	//should i destroy the attributes here?
+-	pthread_attr_destroy(&id.attr);
+-
+ 	if (pthread_cancel(id.thread) != PTHREAD_NO_ERROR) {
+ 		//there was an error - how should we handle these? or should we?
+ 		gsDebugFormat(GSIDebugCat_Common, GSIDebugType_Misc, GSIDebugLevel_WarmError,
+@@ -57,13 +72,20 @@ void gsiCancelThread(GSIThreadID id)
+ 	//free up memory and set to NULL
+ 
+ 	gsifree(&id.thread);
++	#endif
++
++	pthread_attr_destroy(&id.attr);
+ }
+ 
+ // This must be called from INSIDE the thread you wish to exit
+ void gsiExitThread(GSIThreadID id)
+ {
++	#if !defined(__ANDROID__)
+ 	// detach the thread so that it knows to free resources upon exit
+ 	pthread_detach(id.thread);
++	#else
++	GSI_UNUSED(id);
++	#endif
+ 	
+ 	// exit thread to free up resources
+ 	pthread_exit(NULL);
+@@ -71,6 +93,15 @@ void gsiExitThread(GSIThreadID id)
+ 
+ void gsiCleanupThread(GSIThreadID id)
+ {
++	#if defined(__ANDROID__)
++	// Android workers remain joinable so their resources are reclaimed here.
++	if (pthread_join(id.thread, NULL) != PTHREAD_NO_ERROR)
++	{
++		gsDebugFormat(GSIDebugCat_Common, GSIDebugType_Misc, GSIDebugLevel_WarmError,
++			"Failed to join completed thread\r\n");
++	}
++	#endif
++
+ 	// destroy any leftover attributes associated with the thread
+ 	pthread_attr_destroy(&id.attr);
+ }

@@ -188,6 +188,30 @@ else()
 endif()
 set(LUA_USE_POSIX ON CACHE BOOL "" FORCE)
 set(LUA_USE_DLOPEN ON CACHE BOOL "" FORCE)
+
+# LuaJIT generates target tables with two small executables that must run on
+# the Windows build host. Prefer a portable LLVM-MinGW toolchain when Visual
+# Studio Build Tools are not installed; Android code itself still uses NDK
+# Clang. The versioned directory lives beside the Android SDK/toolchains and is
+# intentionally outside the source tree.
+file(GLOB OPENXRAY_HOST_LLVM_MINGW_CANDIDATES LIST_DIRECTORIES TRUE
+    "${OPENXRAY_ROOT}/../.toolchains/llvm-mingw-*-ucrt-x86_64")
+if (OPENXRAY_HOST_LLVM_MINGW_CANDIDATES)
+    list(SORT OPENXRAY_HOST_LLVM_MINGW_CANDIDATES COMPARE NATURAL ORDER DESCENDING)
+    list(GET OPENXRAY_HOST_LLVM_MINGW_CANDIDATES 0 OPENXRAY_HOST_LLVM_MINGW_ROOT)
+    set(OPENXRAY_HOST_LLVM_MINGW_ROOT "${OPENXRAY_HOST_LLVM_MINGW_ROOT}" CACHE PATH
+        "Portable LLVM-MinGW root used for LuaJIT host generators" FORCE)
+endif()
+if (EXISTS "${OPENXRAY_ROOT}/../.toolchains/tcc-0.9.27-win64-bin/tcc/tcc.exe")
+    set(OPENXRAY_HOST_TCC64
+        "${OPENXRAY_ROOT}/../.toolchains/tcc-0.9.27-win64-bin/tcc/tcc.exe" CACHE FILEPATH
+        "TinyCC executable used for 64-bit LuaJIT host generators" FORCE)
+endif()
+if (EXISTS "${OPENXRAY_ROOT}/../.toolchains/tcc-0.9.27-win32-bin/tcc/tcc.exe")
+    set(OPENXRAY_HOST_TCC32
+        "${OPENXRAY_ROOT}/../.toolchains/tcc-0.9.27-win32-bin/tcc/tcc.exe" CACHE FILEPATH
+        "TinyCC executable used for 32-bit LuaJIT host generators" FORCE)
+endif()
 add_subdirectory("${OPENXRAY_ROOT}/Externals/LuaJIT-proj" "${CMAKE_CURRENT_BINARY_DIR}/LuaJIT")
 
 add_subdirectory("${OPENXRAY_ROOT}/Externals/luabind" "${CMAKE_CURRENT_BINARY_DIR}/luabind")
@@ -303,6 +327,8 @@ target_compile_definitions(main PRIVATE
 target_include_directories(main PRIVATE
     "${OPENXRAY_ANDROID_GENERATED_DIR}"
     "${OPENXRAY_ROOT}/src"
+    "${OPENXRAY_ROOT}/Externals/gli"
+    "${OPENXRAY_ROOT}/Externals/gli/external"
     "${OPENXRAY_ROOT}/Externals/OPCODE"
     "${OPENXRAY_ROOT}/Externals/ode/include"
     "${OPENXRAY_ROOT}/Externals/GameSpy/src/GameSpy"

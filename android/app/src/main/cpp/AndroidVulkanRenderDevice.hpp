@@ -8,6 +8,7 @@
 #include "xrEngine/Render.h"
 
 #include <cstdint>
+#include <cstddef>
 #include <string>
 
 // First Stage-6 bridge between the native Vulkan bootstrap and the render
@@ -21,6 +22,14 @@ public:
     ~AndroidVulkanRenderDevice() override;
 
     bool HasFailed() const { return failed; }
+    AndroidVulkanUiTexture CreateUiTexture(const char* name, std::uint32_t width,
+        std::uint32_t height, const std::uint8_t* rgbaPixels, std::size_t byteCount);
+    bool UpdateUiTexture(AndroidVulkanUiTexture texture,
+        const std::uint8_t* rgbaPixels, std::size_t byteCount);
+    void SubmitUiBatch(const AndroidVulkanUiVertex* vertices, std::size_t vertexCount,
+        AndroidVulkanUiPrimitive primitive, const AndroidVulkanUiScissor& scissor,
+        AndroidVulkanUiTexture texture,
+        AndroidVulkanUiTextureMode textureMode = AndroidVulkanUiTextureMode::Normal);
 
     GenerationLevel GetGeneration() const override;
     BackendAPI GetBackendAPI() const override;
