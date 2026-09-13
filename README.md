@@ -12,20 +12,16 @@
 </div>
 
 > [!WARNING]
-> This is a development preview, not a finished mobile edition. The engine reaches the
-> Shadow of Chernobyl main menu and starts loading a new game, but the world renderer
-> and complete gameplay path are not ready yet.
+> This is a development preview, not a finished mobile edition.
 
 ## What this repository is
 
-This fork brings the open-source OpenXRay 1.6 engine and the Shadow of Chernobyl game
-module to Android. It uses a native SDL host, Android's Storage Access Framework for
+This fork brings the open-source OpenXRay 1.6 engine to Android. It uses a native SDL host, Android's Storage Access Framework for
 user-owned game data, OpenAL Soft through OpenSL ES for audio, and a native Vulkan
 renderer being integrated incrementally with the original X-Ray UI and game runtime.
 
 The repository contains **engine source code only**. It does not include or download
-commercial S.T.A.L.K.E.R. assets. You must provide your own legally obtained Shadow of
-Chernobyl installation.
+commercial S.T.A.L.K.E.R. assets. You must provide your own legally obtained game installation.
 
 ## Project status
 
@@ -48,24 +44,13 @@ What is not complete:
 - lifecycle recovery and renderer resource recreation still need hardening;
 - ARMv7 is intentionally deferred while the ARM64 path is stabilized.
 
-### Roadmap position
-
-| Milestone | State | Result |
-|---|---|---|
-| Stage 0 | External/legal gate | Distribution remains engine-only and requires user-owned data |
-| Stages 1–4 | Complete | Android toolchain, native dependencies, SAF/VFS and engine bootstrap |
-| Stage 5 | Complete | Persistent native Vulkan renderer and presentation loop |
-| Stage 6 | In progress | ShoC runtime, startup videos, fonts and menu work; level startup reached |
-| Stage 7 | Next | First visible in-game world frame and functional gameplay render loop |
-| Stages 8–13 | Planned | Input, lifecycle, performance, compatibility, packaging and full playthrough |
-
 ## Device requirements
 
 - Android 8.0 / API 26 or newer;
-- 64-bit ARM device (`arm64-v8a`);
+- 64-bit ARM device (`arm64-v8a`) (Soon arm v7a);
 - Vulkan-capable GPU;
 - enough storage for the APK, private caches and original game installation;
-- a legally obtained S.T.A.L.K.E.R.: Shadow of Chernobyl data set.
+- a legally obtained S.T.A.L.K.E.R. data set.
 
 The latest development work is tested on a Pixel 7 Pro. Device compatibility is not
 yet guaranteed.
@@ -98,19 +83,12 @@ More details and device instructions are in the [Android build guide](android/RE
 ## Installing game data
 
 1. Install the APK on the Android device.
-2. Copy your original Shadow of Chernobyl installation to accessible device storage.
+2. Copy your original game installation to accessible device storage.
 3. Open the launcher and choose the installation directory with the system folder picker.
 4. Press **Start engine host**.
 
 The permission is retained by Android. The port does not request broad storage access
 and does not package, upload or redistribute the selected data.
-
-## Development notes
-
-The Android backend exposes incomplete renderer services as explicit bootstrap
-implementations. This keeps progress measurable: a successful menu does not pretend
-that models or the level renderer already work. The immediate goal is to replace the
-remaining world-rendering stubs and reach the first correct frame of `l01_escape`.
 
 For native logs:
 
