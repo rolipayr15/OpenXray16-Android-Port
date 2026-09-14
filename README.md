@@ -7,7 +7,6 @@
 
   [![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)](android/README.md)
   [![ABI](https://img.shields.io/badge/ABI-arm64--v8a-blue)](android/README.md)
-  [![Renderer](https://img.shields.io/badge/Renderer-native%20Vulkan-red)](android/README.md)
 </div>
 
 > [!WARNING]
