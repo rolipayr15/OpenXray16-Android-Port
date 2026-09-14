@@ -10,7 +10,7 @@
 </div>
 
 > [!WARNING]
-> This is a development preview, not a finished mobile edition.
+> This is a development preview, not a finished engine
 
 ## What this repository is
 
