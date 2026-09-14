@@ -14,8 +14,7 @@
 
 ## What this repository is
 
-This fork brings the open-source OpenXRay 1.6 engine to Android. It uses a native SDL host, Android's Storage Access Framework for
-user-owned game data, OpenAL Soft through OpenSL ES for audio, and a native Vulkan
+This fork brings the open-source OpenXRay 1.6 engine to Android. It uses a native SDL host, Android's Storage Access Framework for game data, OpenAL Soft through OpenSL ES for audio, and Vulkan
 renderer being integrated incrementally with the original X-Ray UI and game runtime.
 
 The repository contains **engine source code only**. It does not include or download
