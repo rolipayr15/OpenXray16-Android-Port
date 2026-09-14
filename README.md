@@ -1,8 +1,8 @@
 <div align="center">
   <img src="misc/media/OpenXRayCover.png" alt="OpenXRay" width="760" />
 
-  # OpenXRay16 — Android Port
-
+  # OpenXRdroid16 — Android Port of OpenXray16
+ 
   **Experimental native Android port of S.T.A.L.K.E.R. Game**
 
   [![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)](android/README.md)
