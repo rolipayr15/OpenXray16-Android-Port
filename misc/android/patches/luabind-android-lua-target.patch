@@ -1,0 +1,15 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index a467457..3c6f678 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -37,6 +37,10 @@ target_link_libraries(xrLuabind
+ 
+ if (XRAY_USE_LUAJIT)
+     target_link_libraries(xrLuabind PUBLIC xrLuaJIT)
++elseif (TARGET Lua51)
++    # Android embeds the official Lua 5.1 interpreter as an in-tree target;
++    # no host-installed FindLua package exists while cross-compiling.
++    target_link_libraries(xrLuabind PUBLIC Lua51)
+ else()
+     find_package(Lua REQUIRED)
+     target_link_libraries(xrLuabind PUBLIC ${LUA_LIBRARIES})

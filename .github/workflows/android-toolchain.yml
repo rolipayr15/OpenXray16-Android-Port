@@ -1,0 +1,101 @@
+name: Android host
+
+on:
+  push:
+    paths:
+      - ".github/workflows/android-toolchain.yml"
+      - ".gitmodules"
+      - "android/**"
+      - "Externals/SDL2"
+      - "misc/android/**"
+      - "cmake/**"
+      - "src/Common/Platform*"
+      - "src/utils/xrMiscMath/**"
+      - "src/xrCore/**"
+  pull_request:
+    paths:
+      - ".github/workflows/android-toolchain.yml"
+      - ".gitmodules"
+      - "android/**"
+      - "Externals/SDL2"
+      - "misc/android/**"
+      - "cmake/**"
+      - "src/Common/Platform*"
+      - "src/utils/xrMiscMath/**"
+      - "src/xrCore/**"
+  workflow_dispatch:
+
+jobs:
+  smoke-test:
+    name: Build ARM64 and ARMv7 host APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: microsoft
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install pinned SDK, NDK and CMake
+        shell: pwsh
+        run: |
+          $versions = @{}
+          Get-Content misc/android/toolchain.properties | ForEach-Object {
+            $line = $_.Trim()
+            if ($line -and !$line.StartsWith('#')) {
+              $parts = $line.Split('=', 2)
+              $versions[$parts[0].Trim()] = $parts[1].Trim()
+            }
+          }
+          sdkmanager `
+            "cmdline-tools;$($versions['android.cmdlineTools.version'])" `
+            "platforms;android-$($versions['android.compileSdk'])" `
+            "build-tools;$($versions['android.buildTools'])" `
+            "ndk;$($versions['android.ndk'])" `
+            "cmake;$($versions['android.cmake'])"
+
+      - name: Verify both ARM compilers
+        shell: pwsh
+        run: ./misc/android/verify-toolchain.ps1 -SdkRoot $env:ANDROID_SDK_ROOT
+
+      - name: Build debug host APK
+        shell: bash
+        run: bash android/gradlew -p android --no-daemon assembleDebug lintDebug
+
+      - name: Verify packaged ABIs and data boundary
+        shell: pwsh
+        run: |
+          $apk = 'android/app/build/outputs/apk/debug/app-debug.apk'
+          $entries = & jar tf $apk
+          @(
+            'lib/arm64-v8a/libSDL2.so',
+            'lib/arm64-v8a/libmain.so',
+            'lib/arm64-v8a/libopenal.so',
+            'lib/armeabi-v7a/libSDL2.so',
+            'lib/armeabi-v7a/libmain.so',
+            'lib/armeabi-v7a/libopenal.so'
+          ) | ForEach-Object {
+            if ($_ -notin $entries) {
+              throw "Missing APK entry: $_"
+            }
+          }
+          $forbidden = @($entries | Where-Object {
+            $_ -match '(^|/)(gamedata|levels|textures|sounds|videos)(/|$)' -or
+            $_ -match '\.db[0-9a-z]*$'
+          })
+          if ($forbidden.Count) {
+            throw "Commercial game-data-like files were packaged: $($forbidden -join ', ')"
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openxray-android-host-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

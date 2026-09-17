@@ -1,0 +1,59 @@
+diff --git a/src/lj_dispatch.h b/src/lj_dispatch.h
+index be7c410a..f49a23f1 100644
+--- a/src/lj_dispatch.h
++++ b/src/lj_dispatch.h
+@@ -91,8 +91,13 @@ typedef struct GG_State {
+   global_State g;			/* Global state. */
+ #if LJ_TARGET_ARM
+   /* Make g reachable via K12 encoded DISPATCH-relative addressing. */
++#if defined(_MSC_VER) && !LJ_HASJIT
++  /* The ARM32 interpreter-only build has no padding here. MSVC rejects the
++  ** zero-length array while compiling the native buildvm host tool. */
++#else
+   uint8_t align1[(16-sizeof(global_State))&15];
+ #endif
++#endif
+ #if LJ_TARGET_MIPS
+   ASMFunction got[LJ_GOT__MAX];		/* Global offset table. */
+ #endif
+diff --git a/src/lj_ircall.h b/src/lj_ircall.h
+index d467403e..8ec2ea93 100644
+--- a/src/lj_ircall.h
++++ b/src/lj_ircall.h
+@@ -343,6 +343,16 @@ extern double lj_vm_sfmax(double a, double b);
+ #define fp64_d2ul __fixunsdfdi
+ #define fp64_f2l __fixsfdi
+ #define fp64_f2ul __fixunssfdi
++#elif defined(_MSC_VER)
++/* Cross-build buildvm only stringifies these target helper names. */
++#define fp64_l2d __floatdidf
++#define fp64_ul2d __floatundidf
++#define fp64_l2f __floatdisf
++#define fp64_ul2f __floatundisf
++#define fp64_d2l __fixdfdi
++#define fp64_d2ul __fixunsdfdi
++#define fp64_f2l __fixsfdi
++#define fp64_f2ul __fixunssfdi
+ #else
+ #error "Missing fp64 helper definitions for this compiler"
+ #endif
+diff --git a/src/lj_jit.h b/src/lj_jit.h
+index 03ed3ea0..d073d8bb 100644
+--- a/src/lj_jit.h
++++ b/src/lj_jit.h
+@@ -438,9 +438,15 @@ typedef struct jit_State {
+   int32_t framedepth;	/* Current frame depth. */
+   int32_t retdepth;	/* Return frame depth (count of RETF). */
+ 
++#if !defined(_MSC_VER) || !(LJ_TARGET_ARM || LJ_TARGET_ARM64)
++  /* Both constant sets are empty on ARM. Omit them in the native MSVC
++  ** buildvm host so its layout matches the target compiler's zero arrays. */
+   uint32_t k32[LJ_K32__MAX];  /* Common 4 byte constants used by backends. */
++#endif
+   TValue ksimd[LJ_KSIMD__MAX*2+1];  /* 16 byte aligned SIMD constants. */
++#if !defined(_MSC_VER) || !(LJ_TARGET_ARM || LJ_TARGET_ARM64)
+   TValue k64[LJ_K64__MAX];  /* Common 8 byte constants. */
++#endif
+ 
+   IRIns *irbuf;		/* Temp. IR instruction buffer. Biased with REF_BIAS. */
+   IRRef irtoplim;	/* Upper limit of instuction buffer (biased). */

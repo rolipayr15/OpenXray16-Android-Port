@@ -1,0 +1,57 @@
+plugins {
+    id 'com.android.application'
+}
+
+def repositoryRoot = rootProject.projectDir.parentFile
+
+android {
+    namespace = 'org.openxray.android'
+    compileSdk 36
+    buildToolsVersion '36.0.0'
+    ndkVersion = '29.0.14206865'
+
+    defaultConfig {
+        applicationId 'org.openxray.android'
+        minSdk 26
+        targetSdk 36
+        versionCode 6
+        versionName '0.6.0-alpha.1'
+
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_shared'
+                cppFlags '-std=c++17'
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            debuggable true
+        }
+        release {
+            minifyEnabled false
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version = '4.1.2'
+        }
+    }
+
+    sourceSets {
+        main {
+            java.srcDir new File(repositoryRoot, 'Externals/SDL2/android-project/app/src/main/java')
+        }
+    }
+
+    lint {
+        baseline = file('lint-baseline.xml')
+    }
+}
