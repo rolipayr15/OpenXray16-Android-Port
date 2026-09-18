@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="misc/media/OpenXRayCover.png" alt="OpenXRay" width="760" />
+  <img src="misc/media/OpenXRdroid16Cover.png" alt="OpenXRay" width="760" />
 
   # OpenXRdroid16 — Android Port of OpenXray16
  
@@ -20,26 +20,9 @@ renderer being integrated incrementally with the original X-Ray UI and game runt
 The repository contains **engine source code only**. It does not include or download
 commercial S.T.A.L.K.E.R. assets. You must provide your own legally obtained game installation.
 
-## Project status
+## Important info
 
-The port has moved beyond a renderer demo. On a real ARM64 Android device it currently:
-
-- builds and launches the complete native engine and ShoC game module;
-- reads an installation selected through Android's system folder picker;
-- mounts the original encrypted `gamedata.db*` archives without copying them;
-- initializes scripting, physics, audio, input, configuration, localization and UI;
-- owns a persistent native Vulkan swapchain and frame loop;
-- renders the startup UI, animated cursor, fonts and full main menu;
-- decodes and displays original OGM/Theora intros and animated menu backgrounds;
-- begins a new game and loads `l01_escape`, including server state and game objects.
-
-What is not complete:
-
-- level geometry, models, materials, lighting and world particles are not rendered;
-- gameplay is not yet visible or playable end-to-end;
-- touch controls and a production mobile input layout are not implemented;
-- lifecycle recovery and renderer resource recreation still need hardening;
-- ARMv7 is intentionally deferred while the ARM64 path is stabilized.
+At the moment, only SoC has been tested (though it is not possible to play it fully... yet). The other two games of the trilogy have not been tested.
 
 ## Device requirements
 
