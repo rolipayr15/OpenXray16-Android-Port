@@ -26,6 +26,9 @@
 #include "xrEngine/xr_object.h"
 #include "ph_valid_ode.h"
 
+static bool RepairInvalidCharacterBody(
+    dBodyID body, dReal* safePosition, dReal* safeVelocity, pcstr context);
+
 const float LOSE_CONTROL_DISTANCE = 0.5f; // fly distance to lose control
 const float CLAMB_DISTANCE = 0.5f;
 //const float CLIMB_GETUP_HEIGHT = 0.3f;
@@ -500,6 +503,7 @@ void CPHSimpleCharacter::PhDataUpdate(dReal /**step**/)
 {
     ///////////////////
 
+    RepairInvalidCharacterBody(m_body, m_safe_position, m_safe_velocity, "PhDataUpdate begin");
     SafeAndLimitVelocity();
 
     if (!dBodyIsEnabled(m_body))
@@ -561,6 +565,7 @@ void CPHSimpleCharacter::PhDataUpdate(dReal /**step**/)
     }
     m_last_move.sub(cast_fv(dBodyGetPosition(m_body)), m_last_move);
     m_last_move.mul(1.f / fixed_step);
+    RepairInvalidCharacterBody(m_body, m_safe_position, m_safe_velocity, "PhDataUpdate end");
     VERIFY2(dBodyStateValide(m_body), "WRONG BODYSTATE IN PhDataUpdate");
     if (PhOutOfBoundaries(cast_fv(dBodyGetPosition(m_body))))
         Disable();
@@ -1098,6 +1103,7 @@ void CPHSimpleCharacter::SetPosition(const Fvector& pos)
     dGeomGetUserData(m_hat)->pushing_neg = false;
 
     dBodySetPosition(m_body, pos.x, pos.y + m_radius, pos.z);
+    RepairInvalidCharacterBody(m_body, m_safe_position, m_safe_velocity, "SetPosition");
     CPHDisablingTranslational::Reinit();
     m_body_interpolation.ResetPositions();
     CPHObject::spatial_move();
@@ -1252,6 +1258,53 @@ void CPHSimpleCharacter::doCaptureExist(bool& do_exist)
 }
 */
 // float max_hit_vel_limit = 3000.f;
+static bool RepairInvalidCharacterBody(
+    dBodyID body, dReal* safePosition, dReal* safeVelocity, pcstr context)
+{
+#ifndef __ANDROID__
+    return false;
+#else
+    if (!body || dBodyStateValide(body))
+        return false;
+
+    const bool badRotation = !dM_valid(dBodyGetRotation(body));
+    const bool badPosition = !dV_valid(dBodyGetPosition(body));
+    const bool badLinearVelocity = !dV_valid(dBodyGetLinearVel(body));
+    const bool badAngularVelocity = !dV_valid(dBodyGetAngularVel(body));
+    const bool badTorque = !dV_valid(dBodyGetTorque(body));
+    const bool badForce = !dV_valid(dBodyGetForce(body));
+    Msg("~ Android physics: repairing character body in [%s]: rot=%d pos=%d lvel=%d avel=%d torque=%d force=%d",
+        context ? context : "unknown", badRotation, badPosition, badLinearVelocity,
+        badAngularVelocity, badTorque, badForce);
+
+    if (badRotation)
+    {
+        dMatrix3 identity;
+        dRSetIdentity(identity);
+        dBodySetRotation(body, identity);
+    }
+    if (badPosition)
+    {
+        if (!dV_valid(safePosition))
+            dVectorSetZero(safePosition);
+        dBodySetPosition(body, safePosition[0], safePosition[1], safePosition[2]);
+    }
+    if (badLinearVelocity)
+    {
+        if (!dV_valid(safeVelocity))
+            dVectorSetZero(safeVelocity);
+        dBodySetLinearVel(body, safeVelocity[0], safeVelocity[1], safeVelocity[2]);
+    }
+    if (badAngularVelocity)
+        dBodySetAngularVel(body, 0.f, 0.f, 0.f);
+    if (badTorque)
+        dBodySetTorque(body, 0.f, 0.f, 0.f);
+    if (badForce)
+        dBodySetForce(body, 0.f, 0.f, 0.f);
+    return true;
+#endif
+}
+
 void CPHSimpleCharacter::SafeAndLimitVelocity()
 {
     const float* linear_velocity = dBodyGetLinearVel(m_body);

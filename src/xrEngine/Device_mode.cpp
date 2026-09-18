@@ -244,6 +244,15 @@ SDL_Window* CRenderDevice::GetApplicationWindow()
 
 void CRenderDevice::OnErrorDialog(bool beforeDialog)
 {
+#ifdef __ANDROID__
+    // SDL's Android relative-mouse implementation reaches into the Java View
+    // hierarchy. Error reporting runs on the native engine thread, where that
+    // JNI transition is invalid on current Android releases. The Android
+    // activity is already borderless, so there is no fullscreen state to
+    // change while presenting an assertion.
+    (void)beforeDialog;
+    return;
+#else
     const bool restore = !beforeDialog;
     const bool needUpdateInput = pInput && pInput->IsExclusiveMode();
 
@@ -254,6 +263,7 @@ void CRenderDevice::OnErrorDialog(bool beforeDialog)
 
     if (needUpdateInput)
         pInput->GrabInput(restore);
+#endif
 }
 
 void CRenderDevice::OnFatalError()

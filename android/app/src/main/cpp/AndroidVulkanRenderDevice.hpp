@@ -133,6 +133,7 @@ private:
         std::uint32_t vertexCount{};
         std::uint32_t indexCount{};
         AndroidVulkanUiTexture texture{};
+        std::vector<AndroidVulkanWorldVertex> uploadedVertices;
     };
 
     struct DynamicDraw
@@ -145,6 +146,7 @@ private:
 
     void UpdateDimensions(SDL_Window* window, u32& width, u32& height, float& halfWidth, float& halfHeight);
     void ClearDynamicMeshes();
+    void SubmitTouchControls();
 
     AndroidVulkanRenderer renderer;
     AndroidRenderModelPool* modelPool{};

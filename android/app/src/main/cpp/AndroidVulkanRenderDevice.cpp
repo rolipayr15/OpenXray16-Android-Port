@@ -7,6 +7,7 @@
 #include "xrEngine/IGame_Persistent.h"
 #include "xrEngine/IRenderable.h"
 #include "xrEngine/device.h"
+#include "xrEngine/AndroidTouchControls.hpp"
 #include "xrEngine/vis_common.h"
 #include "xrCore/FMesh.hpp"
 #include "xrCore/LocatorAPI.h"
@@ -236,6 +237,133 @@ bool ReadLevelIndexBuffers(CStreamReader& geometry, std::vector<AndroidLevelInde
     return true;
 }
 
+void AppendCircle(std::vector<AndroidVulkanUiVertex>& vertices, float x, float y,
+    float radius, std::uint32_t color, bool filled)
+{
+    constexpr int segments = 32;
+    if (filled)
+    {
+        for (int segment = 0; segment < segments; ++segment)
+        {
+            const float a0 = static_cast<float>(segment) * PI_MUL_2 / segments;
+            const float a1 = static_cast<float>(segment + 1) * PI_MUL_2 / segments;
+            vertices.push_back({x, y, 0.f, color, 0.f, 0.f});
+            vertices.push_back({x + std::cos(a0) * radius, y + std::sin(a0) * radius,
+                0.f, color, 0.f, 0.f});
+            vertices.push_back({x + std::cos(a1) * radius, y + std::sin(a1) * radius,
+                0.f, color, 0.f, 0.f});
+        }
+    }
+    else
+    {
+        for (int segment = 0; segment < segments; ++segment)
+        {
+            const float a0 = static_cast<float>(segment) * PI_MUL_2 / segments;
+            const float a1 = static_cast<float>(segment + 1) * PI_MUL_2 / segments;
+            vertices.push_back({x + std::cos(a0) * radius, y + std::sin(a0) * radius,
+                0.f, color, 0.f, 0.f});
+            vertices.push_back({x + std::cos(a1) * radius, y + std::sin(a1) * radius,
+                0.f, color, 0.f, 0.f});
+        }
+    }
+}
+
+void AppendGlyphLine(std::vector<AndroidVulkanUiVertex>& vertices, float cx, float cy,
+    float radius, float x0, float y0, float x1, float y1, std::uint32_t color)
+{
+    vertices.push_back({cx + x0 * radius, cy + y0 * radius, 0.f, color, 0.f, 0.f});
+    vertices.push_back({cx + x1 * radius, cy + y1 * radius, 0.f, color, 0.f, 0.f});
+}
+
+void AppendTouchGlyph(std::vector<AndroidVulkanUiVertex>& vertices, AndroidTouchAction action,
+    float x, float y, float radius, std::uint32_t color)
+{
+    auto line = [&](float x0, float y0, float x1, float y1)
+    {
+        AppendGlyphLine(vertices, x, y, radius, x0, y0, x1, y1, color);
+    };
+    auto letter = [&](char glyph)
+    {
+        switch (glyph)
+        {
+        case 'F':
+            line(-.30f, .45f, -.30f, -.45f); line(-.30f, -.45f, .34f, -.45f);
+            line(-.30f, -.05f, .22f, -.05f); break;
+        case 'R':
+            line(-.30f, .45f, -.30f, -.45f); line(-.30f, -.45f, .20f, -.45f);
+            line(.20f, -.45f, .34f, -.25f); line(.34f, -.25f, .20f, -.05f);
+            line(.20f, -.05f, -.30f, -.05f); line(0.f, -.05f, .38f, .45f); break;
+        case 'I':
+            line(-.28f, -.45f, .28f, -.45f); line(0.f, -.45f, 0.f, .45f);
+            line(-.28f, .45f, .28f, .45f); break;
+        case 'P':
+            line(-.30f, .45f, -.30f, -.45f); line(-.30f, -.45f, .18f, -.45f);
+            line(.18f, -.45f, .36f, -.25f); line(.36f, -.25f, .18f, -.05f);
+            line(.18f, -.05f, -.30f, -.05f); break;
+        case 'L':
+            line(-.28f, -.45f, -.28f, .45f); line(-.28f, .45f, .32f, .45f); break;
+        default: break;
+        }
+    };
+    auto digit = [&](int value)
+    {
+        const bool a = value != 1 && value != 4;
+        const bool b = value != 5 && value != 6;
+        const bool c = value != 2;
+        const bool d = value != 1 && value != 4 && value != 7;
+        const bool e = value == 2 || value == 6 || value == 8;
+        const bool f = value == 4 || value == 5 || value == 6 || value == 8 || value == 9;
+        const bool g = value != 0 && value != 1 && value != 7;
+        if (a) line(-.25f, -.42f, .25f, -.42f);
+        if (b) line(.25f, -.42f, .25f, 0.f);
+        if (c) line(.25f, 0.f, .25f, .42f);
+        if (d) line(-.25f, .42f, .25f, .42f);
+        if (e) line(-.25f, 0.f, -.25f, .42f);
+        if (f) line(-.25f, -.42f, -.25f, 0.f);
+        if (g) line(-.25f, 0.f, .25f, 0.f);
+    };
+    switch (action)
+    {
+    case AndroidTouchAction::Fire:
+        line(-.45f, 0.f, .45f, 0.f); line(0.f, -.45f, 0.f, .45f);
+        break;
+    case AndroidTouchAction::Jump:
+        line(0.f, .45f, 0.f, -.45f); line(0.f, -.45f, -.28f, -.12f);
+        line(0.f, -.45f, .28f, -.12f);
+        break;
+    case AndroidTouchAction::Use:
+        letter('F');
+        break;
+    case AndroidTouchAction::Crouch:
+        line(.35f, -.4f, -.15f, -.4f); line(-.15f, -.4f, -.4f, 0.f);
+        line(-.4f, 0.f, -.15f, .4f); line(-.15f, .4f, .35f, .4f);
+        break;
+    case AndroidTouchAction::Reload:
+        letter('R');
+        break;
+    case AndroidTouchAction::Inventory:
+        letter('I');
+        break;
+    case AndroidTouchAction::Pda:
+        letter('P');
+        break;
+    case AndroidTouchAction::Flashlight:
+        letter('L');
+        break;
+    case AndroidTouchAction::Slot1: digit(1); break;
+    case AndroidTouchAction::Slot2: digit(2); break;
+    case AndroidTouchAction::Slot3: digit(3); break;
+    case AndroidTouchAction::Slot4: digit(4); break;
+    case AndroidTouchAction::Slot5: digit(5); break;
+    case AndroidTouchAction::Slot6: digit(6); break;
+        break;
+    case AndroidTouchAction::Pause:
+        line(-.18f, -.45f, -.18f, .45f); line(.18f, -.45f, .18f, .45f);
+        break;
+    default: break;
+    }
+}
+
 // Particle GPU geometry is the next renderer subsystem; retain the real
 // engine-visible lifecycle while that dedicated path is connected.
 class AndroidBootstrapParticleVisual final : public IRenderVisual, public IParticleCustom
@@ -424,10 +552,12 @@ void AndroidVulkanRenderDevice::level_Load(IReader* level)
     __android_log_print(ANDROID_LOG_INFO, LogTag,
         "Android Vulkan: uploaded level geometry: %zu vertices, %zu indices, %zu draws",
         vertices.size(), indices.size(), levelDraws.size());
+    AndroidTouchControlsSetGameplayActive(true);
 }
 
 void AndroidVulkanRenderDevice::level_Unload()
 {
+    AndroidTouchControlsSetGameplayActive(false);
     if (levelMesh != 0)
         renderer.DestroyWorldMesh(levelMesh);
     levelMesh = 0;
@@ -480,6 +610,9 @@ void AndroidVulkanRenderDevice::add_Visual(
                 continue;
             cached.vertexCount = static_cast<std::uint32_t>(part.vertices.size());
             cached.indexCount = static_cast<std::uint32_t>(part.indices.size());
+            cached.uploadedVertices.assign(
+                reinterpret_cast<const AndroidVulkanWorldVertex*>(part.vertices.data()),
+                reinterpret_cast<const AndroidVulkanWorldVertex*>(part.vertices.data()) + part.vertices.size());
             if (!part.texture.empty())
             {
                 std::uint32_t textureWidth = 0;
@@ -492,10 +625,18 @@ void AndroidVulkanRenderDevice::add_Visual(
                 cached.vertexCount, cached.indexCount,
                 part.texture.empty() ? "<none>" : part.texture.c_str());
         }
-        else if (!renderer.UpdateWorldMesh(cached.mesh,
-            reinterpret_cast<const AndroidVulkanWorldVertex*>(part.vertices.data()), part.vertices.size()))
+        else
         {
-            continue;
+            const auto* vertices = reinterpret_cast<const AndroidVulkanWorldVertex*>(part.vertices.data());
+            const std::size_t byteCount = part.vertices.size() * sizeof(AndroidVulkanWorldVertex);
+            const bool changed = cached.uploadedVertices.size() != part.vertices.size() ||
+                std::memcmp(cached.uploadedVertices.data(), vertices, byteCount) != 0;
+            if (changed)
+            {
+                if (!renderer.UpdateWorldMesh(cached.mesh, vertices, part.vertices.size()))
+                    continue;
+                cached.uploadedVertices.assign(vertices, vertices + part.vertices.size());
+            }
         }
 
         DynamicDraw draw{};
@@ -618,9 +759,37 @@ void AndroidVulkanRenderDevice::RenderMenu()
 {
     // The ShoC main menu normally renders into the desktop renderer's
     // post-process UI target. There is no intermediate target in the Android
-    // bootstrap yet, so submit that main pass directly to this frame.
-    if (g_pGamePersistent)
+    // bootstrap yet, so submit that main pass directly to this frame. Android
+    // can expose the physical View size through Device while Vulkan renders
+    // into a lower-resolution fixed-size Surface. pp_start() uses Device's
+    // dimensions, so temporarily give it the actual raster extent; otherwise
+    // only this menu pass is scaled twice and is clipped at the lower-right.
+    if (!g_pGamePersistent)
+        return;
+
+    std::uint32_t rasterWidth = 0;
+    std::uint32_t rasterHeight = 0;
+    renderer.GetSurfaceSize(rasterWidth, rasterHeight);
+    if (rasterWidth == 0 || rasterHeight == 0 ||
+        (Device.dwWidth == rasterWidth && Device.dwHeight == rasterHeight))
+    {
         g_pGamePersistent->OnRenderPPUI_main();
+        return;
+    }
+
+    const u32 savedWidth = Device.dwWidth;
+    const u32 savedHeight = Device.dwHeight;
+    const float savedHalfWidth = Device.fWidth_2;
+    const float savedHalfHeight = Device.fHeight_2;
+    Device.dwWidth = rasterWidth;
+    Device.dwHeight = rasterHeight;
+    Device.fWidth_2 = static_cast<float>(rasterWidth) * 0.5f;
+    Device.fHeight_2 = static_cast<float>(rasterHeight) * 0.5f;
+    g_pGamePersistent->OnRenderPPUI_main();
+    Device.dwWidth = savedWidth;
+    Device.dwHeight = savedHeight;
+    Device.fWidth_2 = savedHalfWidth;
+    Device.fHeight_2 = savedHalfHeight;
 }
 void AndroidVulkanRenderDevice::BeforeWorldRender() {}
 void AndroidVulkanRenderDevice::AfterWorldRender() {}
@@ -754,7 +923,51 @@ void AndroidVulkanRenderDevice::End()
     const float elapsedSeconds = frequency == 0 ? 0.0f : static_cast<float>(
         static_cast<double>(SDL_GetPerformanceCounter() - frameLoopStart) / static_cast<double>(frequency));
     ++frameIndex;
+    SubmitTouchControls();
     failed = !renderer.DrawFrame(frameIndex, elapsedSeconds);
+}
+
+void AndroidVulkanRenderDevice::SubmitTouchControls()
+{
+    AndroidTouchControlsSnapshot controls{};
+    if (!AndroidTouchControlsGetSnapshot(controls))
+        return;
+
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    renderer.GetSurfaceSize(width, height);
+    if (width == 0 || height == 0)
+        return;
+    const float scale = static_cast<float>(std::min(width, height));
+
+    std::vector<AndroidVulkanUiVertex> fill;
+    std::vector<AndroidVulkanUiVertex> lines;
+    const float stickX = controls.stickX * width;
+    const float stickY = controls.stickY * height;
+    const float stickRadius = controls.stickRadius * scale;
+    AppendCircle(fill, stickX, stickY, stickRadius, 0x30283838u, true);
+    AppendCircle(lines, stickX, stickY, stickRadius, 0xA0D8E0E0u, false);
+    const float knobX = controls.knobX * width;
+    const float knobY = controls.knobY * height;
+    AppendCircle(fill, knobX, knobY, stickRadius * .42f, 0x7048A8B8u, true);
+    AppendCircle(lines, knobX, knobY, stickRadius * .42f, 0xD0E8FFFFu, false);
+
+    for (const auto& button : controls.buttons)
+    {
+        const float x = button.x * width;
+        const float y = button.y * height;
+        const float radius = button.radius * scale;
+        const std::uint32_t fillColor = button.pressed ? 0xA078B8C8u : 0x40303838u;
+        AppendCircle(fill, x, y, radius, fillColor, true);
+        AppendCircle(lines, x, y, radius, button.pressed ? 0xFFF4FFFFu : 0xB0D8E0E0u, false);
+        AppendTouchGlyph(lines, button.action, x, y, radius,
+            button.pressed ? 0xFFFFFFFFu : 0xD0E8F0F0u);
+    }
+
+    if (!fill.empty())
+        SubmitUiBatch(fill.data(), fill.size(), AndroidVulkanUiPrimitive::TriangleList, {}, 0);
+    if (!lines.empty())
+        SubmitUiBatch(lines.data(), lines.size(), AndroidVulkanUiPrimitive::LineList, {}, 0);
 }
 
 void AndroidVulkanRenderDevice::ClearTarget() {}

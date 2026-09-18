@@ -2,12 +2,17 @@
 #pragma hdrstop
 
 #include "xr_input.h"
+#ifdef __ANDROID__
+#include "AndroidTouchControls.hpp"
+#endif
 #include "IInputReceiver.h"
 #include "GameFont.h"
 #include "XR_IOConsole.h"
 #include "xrCore/Text/StringConversion.hpp"
 
 #include <locale>
+#include <array>
+#include <cmath>
 
 CInput* pInput = nullptr;
 
@@ -53,6 +58,198 @@ ENGINE_API Flags32 psControllerFlags = { ControllerEnableSensors };
 ENGINE_API float psControllerCursorAutohideTime = 1.5f;
 
 static bool AltF4Pressed = false;
+
+#ifdef __ANDROID__
+namespace
+{
+constexpr SDL_FingerID NoTouchFinger = static_cast<SDL_FingerID>(-1);
+
+struct AndroidTouchState
+{
+    bool active{};
+    SDL_FingerID stickFinger{NoTouchFinger};
+    SDL_FingerID lookFinger{NoTouchFinger};
+    float stickX{0.14f};
+    float stickY{0.73f};
+    float stickRadius{0.11f};
+    float knobX{0.14f};
+    float knobY{0.73f};
+    float lookX{};
+    float lookY{};
+    float aspect{1.0f};
+    std::array<SDL_FingerID, static_cast<size_t>(AndroidTouchAction::Count)> buttonFingers{};
+    std::array<bool, SDL_NUM_SCANCODES> virtualKeys{};
+    bool virtualFire{};
+
+    AndroidTouchState()
+    {
+        buttonFingers.fill(NoTouchFinger);
+    }
+} AndroidTouch;
+
+constexpr AndroidTouchButtonSnapshot TouchButtonLayout[] =
+{
+    {0.89f, 0.72f, 0.078f, AndroidTouchAction::Fire, false},
+    {0.91f, 0.50f, 0.062f, AndroidTouchAction::Jump, false},
+    {0.78f, 0.62f, 0.058f, AndroidTouchAction::Use, false},
+    {0.76f, 0.79f, 0.058f, AndroidTouchAction::Crouch, false},
+    {0.94f, 0.31f, 0.048f, AndroidTouchAction::Reload, false},
+    {0.84f, 0.30f, 0.048f, AndroidTouchAction::Inventory, false},
+    {0.74f, 0.30f, 0.048f, AndroidTouchAction::Pda, false},
+    {0.64f, 0.30f, 0.048f, AndroidTouchAction::Flashlight, false},
+    {0.42f, 0.12f, 0.036f, AndroidTouchAction::Slot1, false},
+    {0.49f, 0.12f, 0.036f, AndroidTouchAction::Slot2, false},
+    {0.56f, 0.12f, 0.036f, AndroidTouchAction::Slot3, false},
+    {0.63f, 0.12f, 0.036f, AndroidTouchAction::Slot4, false},
+    {0.70f, 0.12f, 0.036f, AndroidTouchAction::Slot5, false},
+    {0.77f, 0.12f, 0.036f, AndroidTouchAction::Slot6, false},
+    {0.96f, 0.10f, 0.040f, AndroidTouchAction::Pause, false},
+};
+static_assert(std::size(TouchButtonLayout) == static_cast<size_t>(AndroidTouchAction::Count));
+
+SDL_Scancode TouchActionScancode(AndroidTouchAction action)
+{
+    switch (action)
+    {
+    case AndroidTouchAction::Jump: return SDL_SCANCODE_SPACE;
+    case AndroidTouchAction::Use: return SDL_SCANCODE_F;
+    case AndroidTouchAction::Crouch: return SDL_SCANCODE_LCTRL;
+    case AndroidTouchAction::Reload: return SDL_SCANCODE_R;
+    case AndroidTouchAction::Inventory: return SDL_SCANCODE_I;
+    case AndroidTouchAction::Pda: return SDL_SCANCODE_P;
+    case AndroidTouchAction::Flashlight: return SDL_SCANCODE_L;
+    case AndroidTouchAction::Slot1: return SDL_SCANCODE_1;
+    case AndroidTouchAction::Slot2: return SDL_SCANCODE_2;
+    case AndroidTouchAction::Slot3: return SDL_SCANCODE_3;
+    case AndroidTouchAction::Slot4: return SDL_SCANCODE_4;
+    case AndroidTouchAction::Slot5: return SDL_SCANCODE_5;
+    case AndroidTouchAction::Slot6: return SDL_SCANCODE_6;
+    case AndroidTouchAction::Pause: return SDL_SCANCODE_ESCAPE;
+    default: return SDL_SCANCODE_UNKNOWN;
+    }
+}
+
+void PushVirtualKey(SDL_Scancode scancode, bool pressed)
+{
+    if (scancode == SDL_SCANCODE_UNKNOWN || AndroidTouch.virtualKeys[scancode] == pressed)
+        return;
+    AndroidTouch.virtualKeys[scancode] = pressed;
+    SDL_Event event{};
+    event.type = pressed ? SDL_KEYDOWN : SDL_KEYUP;
+    event.key.state = pressed ? SDL_PRESSED : SDL_RELEASED;
+    event.key.repeat = 0;
+    event.key.keysym.scancode = scancode;
+    event.key.keysym.sym = SDL_GetKeyFromScancode(scancode);
+    SDL_PushEvent(&event);
+}
+
+void PushVirtualFire(bool pressed)
+{
+    if (AndroidTouch.virtualFire == pressed)
+        return;
+    AndroidTouch.virtualFire = pressed;
+    SDL_Event event{};
+    event.type = pressed ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
+    event.button.which = 0;
+    event.button.button = SDL_BUTTON_LEFT;
+    event.button.state = pressed ? SDL_PRESSED : SDL_RELEASED;
+    SDL_PushEvent(&event);
+}
+
+void ReleaseMovement()
+{
+    PushVirtualKey(SDL_SCANCODE_W, false);
+    PushVirtualKey(SDL_SCANCODE_A, false);
+    PushVirtualKey(SDL_SCANCODE_S, false);
+    PushVirtualKey(SDL_SCANCODE_D, false);
+    AndroidTouch.knobX = AndroidTouch.stickX;
+    AndroidTouch.knobY = AndroidTouch.stickY;
+}
+
+void UpdateMovement(float x, float y)
+{
+    float dx = (x - AndroidTouch.stickX) * AndroidTouch.aspect;
+    float dy = y - AndroidTouch.stickY;
+    const float magnitude = std::sqrt(dx * dx + dy * dy);
+    if (magnitude > AndroidTouch.stickRadius)
+    {
+        const float scale = AndroidTouch.stickRadius / magnitude;
+        dx *= scale;
+        dy *= scale;
+    }
+    AndroidTouch.knobX = AndroidTouch.stickX + dx / AndroidTouch.aspect;
+    AndroidTouch.knobY = AndroidTouch.stickY + dy;
+
+    constexpr float threshold = 0.025f;
+    PushVirtualKey(SDL_SCANCODE_W, dy < -threshold);
+    PushVirtualKey(SDL_SCANCODE_S, dy > threshold);
+    // The Vulkan 3D pass is rotated into Android surface orientation, so its
+    // screen-space horizontal direction is opposite to SDL touch X.
+    PushVirtualKey(SDL_SCANCODE_A, dx > threshold);
+    PushVirtualKey(SDL_SCANCODE_D, dx < -threshold);
+}
+
+int HitTouchButton(float x, float y)
+{
+    for (size_t index = 0; index < std::size(TouchButtonLayout); ++index)
+    {
+        const auto& button = TouchButtonLayout[index];
+        const float dx = (x - button.x) * AndroidTouch.aspect;
+        const float dy = y - button.y;
+        if (dx * dx + dy * dy <= button.radius * button.radius)
+            return static_cast<int>(index);
+    }
+    return -1;
+}
+
+void SetTouchButton(size_t index, bool pressed)
+{
+    const AndroidTouchAction action = TouchButtonLayout[index].action;
+    if (action == AndroidTouchAction::Fire)
+        PushVirtualFire(pressed);
+    else
+        PushVirtualKey(TouchActionScancode(action), pressed);
+}
+
+void ReleaseAllTouchControls()
+{
+    ReleaseMovement();
+    PushVirtualFire(false);
+    for (const auto& button : TouchButtonLayout)
+        if (button.action != AndroidTouchAction::Fire)
+            PushVirtualKey(TouchActionScancode(button.action), false);
+    AndroidTouch.stickFinger = NoTouchFinger;
+    AndroidTouch.lookFinger = NoTouchFinger;
+    AndroidTouch.buttonFingers.fill(NoTouchFinger);
+}
+}
+
+void AndroidTouchControlsSetGameplayActive(bool active)
+{
+    if (AndroidTouch.active == active)
+        return;
+    if (!active)
+        ReleaseAllTouchControls();
+    AndroidTouch.active = active;
+}
+
+bool AndroidTouchControlsGetSnapshot(AndroidTouchControlsSnapshot& snapshot)
+{
+    snapshot = {};
+    snapshot.visible = AndroidTouch.active;
+    snapshot.stickX = AndroidTouch.stickX;
+    snapshot.stickY = AndroidTouch.stickY;
+    snapshot.stickRadius = AndroidTouch.stickRadius;
+    snapshot.knobX = AndroidTouch.knobX;
+    snapshot.knobY = AndroidTouch.knobY;
+    for (size_t index = 0; index < std::size(TouchButtonLayout); ++index)
+    {
+        snapshot.buttons[index] = TouchButtonLayout[index];
+        snapshot.buttons[index].pressed = AndroidTouch.buttonFingers[index] != NoTouchFinger;
+    }
+    return snapshot.visible;
+}
+#endif
 
 // Max events per frame
 constexpr size_t MAX_KEYBOARD_EVENTS = 64;
@@ -198,6 +395,10 @@ void CInput::MouseUpdate()
         switch (event.type)
         {
         case SDL_MOUSEMOTION:
+#ifdef __ANDROID__
+            if (AndroidTouch.active && event.motion.which == SDL_TOUCH_MOUSEID)
+                break;
+#endif
             mouseMoved = true;
             offs[0] += event.motion.xrel;
             offs[1] += event.motion.yrel;
@@ -207,6 +408,10 @@ void CInput::MouseUpdate()
 
         case SDL_MOUSEBUTTONDOWN:
         {
+#ifdef __ANDROID__
+            if (AndroidTouch.active && event.button.which == SDL_TOUCH_MOUSEID)
+                break;
+#endif
             const auto idx = RemapIdx[event.button.button - 1];
             mouseState[idx] = true;
             cbStack.back()->IR_OnMousePress(IdxToKey[idx]);
@@ -214,6 +419,10 @@ void CInput::MouseUpdate()
         }
         case SDL_MOUSEBUTTONUP:
         {
+#ifdef __ANDROID__
+            if (AndroidTouch.active && event.button.which == SDL_TOUCH_MOUSEID)
+                break;
+#endif
             const auto idx = RemapIdx[event.button.button - 1];
             mouseState[idx] = false;
             cbStack.back()->IR_OnMouseRelease(IdxToKey[idx]);
@@ -244,6 +453,85 @@ void CInput::MouseUpdate()
             cbStack.back()->IR_OnMouseWheel(scroll[0], scroll[1]);
     }
 }
+
+#ifdef __ANDROID__
+void AndroidTouchUpdate()
+{
+    if (!AndroidTouch.active)
+        return;
+
+    SDL_Event events[MAX_MOUSE_EVENTS];
+    SDL_PumpEvents();
+    const int count = SDL_PeepEvents(events, MAX_MOUSE_EVENTS,
+        SDL_GETEVENT, SDL_FINGERDOWN, SDL_FINGERMOTION);
+    int width = 1;
+    int height = 1;
+    SDL_GetWindowSize(Device.m_sdlWnd, &width, &height);
+    AndroidTouch.aspect = static_cast<float>(width) / static_cast<float>(std::max(height, 1));
+
+    for (int index = 0; index < count; ++index)
+    {
+        const SDL_TouchFingerEvent& finger = events[index].tfinger;
+        if (events[index].type == SDL_FINGERDOWN)
+        {
+            const int button = HitTouchButton(finger.x, finger.y);
+            if (button >= 0 && AndroidTouch.buttonFingers[button] == NoTouchFinger)
+            {
+                AndroidTouch.buttonFingers[button] = finger.fingerId;
+                SetTouchButton(static_cast<size_t>(button), true);
+            }
+            else if (finger.x < 0.42f && finger.y > 0.35f && AndroidTouch.stickFinger == NoTouchFinger)
+            {
+                AndroidTouch.stickFinger = finger.fingerId;
+                UpdateMovement(finger.x, finger.y);
+            }
+            else if (AndroidTouch.lookFinger == NoTouchFinger)
+            {
+                AndroidTouch.lookFinger = finger.fingerId;
+                AndroidTouch.lookX = finger.x;
+                AndroidTouch.lookY = finger.y;
+            }
+        }
+        else if (events[index].type == SDL_FINGERMOTION)
+        {
+            if (finger.fingerId == AndroidTouch.stickFinger)
+                UpdateMovement(finger.x, finger.y);
+            else if (finger.fingerId == AndroidTouch.lookFinger)
+            {
+                SDL_Event motion{};
+                motion.type = SDL_MOUSEMOTION;
+                motion.motion.which = 0;
+                motion.motion.xrel = -static_cast<int>((finger.x - AndroidTouch.lookX) * width * 1.35f);
+                motion.motion.yrel = static_cast<int>((finger.y - AndroidTouch.lookY) * height * 1.35f);
+                motion.motion.x = static_cast<int>(finger.x * width);
+                motion.motion.y = static_cast<int>(finger.y * height);
+                AndroidTouch.lookX = finger.x;
+                AndroidTouch.lookY = finger.y;
+                if (motion.motion.xrel != 0 || motion.motion.yrel != 0)
+                    SDL_PushEvent(&motion);
+            }
+        }
+        else if (events[index].type == SDL_FINGERUP)
+        {
+            if (finger.fingerId == AndroidTouch.stickFinger)
+            {
+                AndroidTouch.stickFinger = NoTouchFinger;
+                ReleaseMovement();
+            }
+            if (finger.fingerId == AndroidTouch.lookFinger)
+                AndroidTouch.lookFinger = NoTouchFinger;
+            for (size_t button = 0; button < AndroidTouch.buttonFingers.size(); ++button)
+            {
+                if (AndroidTouch.buttonFingers[button] == finger.fingerId)
+                {
+                    AndroidTouch.buttonFingers[button] = NoTouchFinger;
+                    SetTouchButton(button, false);
+                }
+            }
+        }
+    }
+}
+#endif
 
 void CInput::KeyUpdate()
 {
@@ -770,6 +1058,9 @@ void CInput::OnFrame(void)
 
     if (Device.dwPrecacheFrame == 0 && !Device.IsAnselActive)
     {
+#ifdef __ANDROID__
+        AndroidTouchUpdate();
+#endif
         ControllerUpdate();
         KeyUpdate();
         MouseUpdate();

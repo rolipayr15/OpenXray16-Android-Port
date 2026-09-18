@@ -210,7 +210,12 @@ void xrDebug::GatherInfo(char* assertionInfo, size_t bufferSize, const ErrorLoca
     }
 
     FlushLog();
+#if !defined(XR_PLATFORM_ANDROID)
+    // SDL's Android clipboard bridge performs a Java call. Assertions can be
+    // gathered from a native signal/error context where JNI transitions are
+    // forbidden, turning the useful first failure into a CheckJNI crash.
     os_clipboard::copy_to_clipboard(assertionInfo);
+#endif
 }
 
 void xrDebug::Fatal(const ErrorLocation& loc, const char* format, ...)
@@ -645,16 +650,19 @@ void xrDebug::OnThreadSpawn()
 {
 #ifndef __SANITIZE_ADDRESS__
     std::signal(SIGINT,  nullptr);
+#   if !defined(XR_PLATFORM_ANDROID)
+    // These handlers build a stack trace, lock, allocate and may enter UI
+    // code, none of which is async-signal-safe. Preserve Android's original
+    // fault context for debuggerd/tombstones instead of masking it with a
+    // secondary crash in the handler.
     std::signal(SIGILL,  +[](int signal) { handler_base("illegal instruction"); });
     std::signal(SIGFPE,  +[](int signal) { handler_base("floating point error"); });
-#   if defined(DEBUG) && !defined(XR_PLATFORM_ANDROID)
-    // Android's debuggerd needs the original SIGSEGV context to produce a
-    // symbolizable tombstone. The desktop handler also returns to the faulting
-    // instruction, causing an endless signal loop on Bionic.
+#       if defined(DEBUG)
     std::signal(SIGSEGV, +[](int signal) { handler_base("segmentation fault"); });
-#   endif
+#       endif
     std::signal(SIGABRT, +[](int signal) { handler_base("application is aborting"); });
     std::signal(SIGTERM, +[](int signal) { handler_base("termination with exit code 3"); });
+#   endif
 
 #   if defined(XR_PLATFORM_WINDOWS)
     std::signal(SIGABRT_COMPAT, +[](int signal) { handler_base("application is aborting"); });

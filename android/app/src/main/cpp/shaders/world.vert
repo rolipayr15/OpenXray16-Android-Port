@@ -15,6 +15,9 @@ layout(push_constant) uniform WorldConstants
 void main()
 {
     gl_Position = constants.worldViewProjection * vec4(position, 1.0);
+    // X-Ray's projection reaches the Android Vulkan surface rotated by 180
+    // degrees.  Keep UI coordinates untouched and correct only the 3D pass.
+    gl_Position.xy = -gl_Position.xy;
     vertexNormal = normal;
     vertexTexcoord = texcoord;
 }

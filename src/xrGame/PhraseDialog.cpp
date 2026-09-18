@@ -8,13 +8,19 @@
 #include "script_game_object.h"
 #include "Actor.h"
 
+namespace
+{
+using PendingPhraseEdges = xr_vector<std::pair<shared_str, shared_str>>;
+xr_unordered_map<SPhraseDialogData*, PendingPhraseEdges> PendingDialogEdges;
+}
+
 SPhraseDialogData::SPhraseDialogData()
 {
     m_PhraseGraph.clear();
     m_iPriority = 0;
 }
 
-SPhraseDialogData::~SPhraseDialogData() {}
+SPhraseDialogData::~SPhraseDialogData() { PendingDialogEdges.erase(this); }
 CPhraseDialog::CPhraseDialog() : m_bFirstIsSpeaking(false)
 {
     m_SaidPhraseID = "";
@@ -218,6 +224,7 @@ void CPhraseDialog::load_shared(LPCSTR)
 
     //заполнить граф диалога фразами
     data()->m_PhraseGraph.clear();
+    PendingDialogEdges[data()].clear();
 
     XML_NODE phrase_list_node = pXML->NavigateToNode(dialog_node, "phrase_list", 0);
     if (NULL == phrase_list_node)
@@ -276,7 +283,29 @@ CPhrase* CPhraseDialog::AddPhrase(
 #endif
 
     if (prev_phrase_id != "")
-        data()->m_PhraseGraph.add_edge(prev_phrase_id, phrase_id, 0.f);
+    {
+        if (data()->m_PhraseGraph.vertex(prev_phrase_id))
+            data()->m_PhraseGraph.add_edge(prev_phrase_id, phrase_id, 0.f);
+        else
+            PendingDialogEdges[data()].emplace_back(prev_phrase_id, phrase_id);
+    }
+
+    // Script-generated dialogs are allowed to declare a child before its
+    // parent. Resolve every edge as soon as both real phrase vertices exist.
+    auto& pending = PendingDialogEdges[data()];
+    for (auto edge = pending.begin(); edge != pending.end();)
+    {
+        CPhraseGraph::CVertex* from = data()->m_PhraseGraph.vertex(edge->first);
+        CPhraseGraph::CVertex* to = data()->m_PhraseGraph.vertex(edge->second);
+        if (from && to)
+        {
+            if (!data()->m_PhraseGraph.edge(edge->first, edge->second))
+                data()->m_PhraseGraph.add_edge(edge->first, edge->second, 0.f);
+            edge = pending.erase(edge);
+        }
+        else
+            ++edge;
+    }
 
     return phrase;
 }

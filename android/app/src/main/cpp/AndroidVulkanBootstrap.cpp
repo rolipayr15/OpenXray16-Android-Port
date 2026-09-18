@@ -1304,6 +1304,8 @@ private:
 
     VkDescriptorSet GetUiDescriptor(AndroidVulkanUiTexture handle) const
     {
+        if (handle == 0)
+            handle = fallbackTexture;
         return handle == 0 || handle > uiTextures.size()
             ? VK_NULL_HANDLE : uiTextures[static_cast<std::size_t>(handle - 1)].descriptorSet;
     }

@@ -513,9 +513,14 @@ int main(int argc, char** argv)
 {
     const char* gameDataUri = FindArgument(argc, argv, "--game-data-uri");
     const char* appFilesPath = FindArgument(argc, argv, "--app-files-path");
+    const char* profileId = FindArgument(argc, argv, "--profile-id");
+    const char* renderScale = FindArgument(argc, argv, "--render-scale");
+    const char* engineArguments = FindArgument(argc, argv, "--engine-args");
     OutputDebugString("Starting OpenXRay Android SDL host");
     __android_log_print(ANDROID_LOG_INFO, LogTag, "Selected game-data tree: %s", gameDataUri);
     __android_log_print(ANDROID_LOG_INFO, LogTag, "Private engine files: %s", appFilesPath);
+    __android_log_print(ANDROID_LOG_INFO, LogTag, "Launch profile: %s; render scale: %s%%",
+        profileId, renderScale);
 
     std::vector<AndroidSafEntry> gameDataRootEntries;
     if (!AndroidSafListDirectory("", gameDataRootEntries))
@@ -659,8 +664,12 @@ int main(int argc, char** argv)
         Core._destroy();
         SDL_Quit();
 
-        const std::string commandLine =
-            std::string("-shoc -nolog -nosplash -fsltx ") + fixtureConfig;
+        std::string commandLine = std::string("-shoc -nolog -nosplash -fsltx ") + fixtureConfig;
+        if (engineArguments && engineArguments[0])
+        {
+            commandLine += ' ';
+            commandLine += engineArguments;
+        }
         AndroidVulkanRendererModule rendererModule(appFilesPath);
         const std::array<RendererModule*, 2> renderModules = { &rendererModule, nullptr };
 
