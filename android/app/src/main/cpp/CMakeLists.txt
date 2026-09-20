@@ -330,6 +330,10 @@ target_compile_definitions(main PRIVATE
     XRAY_STATIC_BUILD
     $<$<CONFIG:Debug>:DEBUG>
 )
+# The Android bridge performs DDS transcoding, detail-slot decompression and
+# per-frame scene submission itself. Keep debug symbols/assertions, but do not
+# run those hot paths at Clang's default -O0 on real devices.
+target_compile_options(main PRIVATE $<$<CONFIG:Debug>:-O2>)
 target_include_directories(main PRIVATE
     "${OPENXRAY_ANDROID_GENERATED_DIR}"
     "${OPENXRAY_ROOT}/src"

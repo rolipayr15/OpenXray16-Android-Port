@@ -227,7 +227,9 @@ bool CDetailPathManager::compute_circles(STrajectoryPoint& point, SCirclePoint* 
 {
     if (fis_zero(point.angular_velocity))
     {
-        VERIFY2(0, "point.angular_velocity is zero");
+        // A zero turn rate is a valid degenerate candidate (straight motion).
+        // The caller already treats false as "try another trajectory"; making
+        // this a fatal debug assertion prevents that intended fallback.
         return false;
     }
 

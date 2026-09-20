@@ -4,9 +4,12 @@
 
 #include "Include/xrRender/ParticleCustom.h"
 #include "Include/xrRender/RenderVisual.h"
-#include "xrEngine/IGame_Persistent.h"
-#include "xrEngine/IRenderable.h"
 #include "xrEngine/device.h"
+#include "xrEngine/IGame_Persistent.h"
+#include "xrEngine/IGame_Level.h"
+#include "xrEngine/Environment.h"
+#include "xrEngine/CustomHUD.h"
+#include "xrEngine/IRenderable.h"
 #include "xrEngine/AndroidTouchControls.hpp"
 #include "xrEngine/vis_common.h"
 #include "xrCore/FMesh.hpp"
@@ -14,6 +17,7 @@
 #include "xrCore/stream_reader.h"
 #include "xrCDB/Frustum.h"
 #include "xrCDB/ISpatial.h"
+#include "xrCDB/xrCDB.h"
 #include "Common/LevelStructure.hpp"
 #include "Common/d3d9compat.hpp"
 
@@ -22,12 +26,15 @@
 #include <android/log.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
+
+extern ENGINE_API float psHUD_FOV;
 
 namespace
 {
@@ -44,6 +51,79 @@ struct AndroidLevelIndexBuffer
     std::vector<std::uint16_t> indices;
     std::uint32_t combinedBase{};
 };
+
+struct AndroidLevelSlidingWindow
+{
+    std::vector<FSlideWindow> windows;
+};
+
+struct AndroidLevelMaterial
+{
+    std::string shaderName;
+    std::string baseTexture;
+    std::string lightmapTexture;
+    std::string hemiTexture;
+};
+
+#pragma pack(push, 1)
+struct AndroidDetailHeader
+{
+    std::uint32_t version;
+    std::uint32_t objectCount;
+    std::int32_t offsetX;
+    std::int32_t offsetZ;
+    std::uint32_t sizeX;
+    std::uint32_t sizeZ;
+};
+
+struct AndroidDetailPalette
+{
+    std::uint16_t a0 : 4;
+    std::uint16_t a1 : 4;
+    std::uint16_t a2 : 4;
+    std::uint16_t a3 : 4;
+};
+
+struct AndroidDetailSlotRaw
+{
+    std::uint32_t yBase : 12;
+    std::uint32_t yHeight : 8;
+    std::uint32_t id0 : 6;
+    std::uint32_t id1 : 6;
+    std::uint32_t id2 : 6;
+    std::uint32_t id3 : 6;
+    std::uint32_t directional : 4;
+    std::uint32_t hemi : 4;
+    std::uint32_t red : 4;
+    std::uint32_t green : 4;
+    std::uint32_t blue : 4;
+    AndroidDetailPalette palette[4];
+};
+#pragma pack(pop)
+
+static_assert(sizeof(AndroidDetailHeader) == 24);
+static_assert(sizeof(AndroidDetailSlotRaw) == 16);
+
+std::uint32_t DetailHash(std::int32_t x, std::int32_t z, std::uint32_t sample)
+{
+    std::uint32_t value = static_cast<std::uint32_t>(x) * 0x9e3779b9u;
+    value ^= static_cast<std::uint32_t>(z) * 0x85ebca6bu;
+    value ^= sample * 0xc2b2ae35u;
+    value ^= value >> 16;
+    value *= 0x7feb352du;
+    value ^= value >> 15;
+    value *= 0x846ca68bu;
+    return value ^ (value >> 16);
+}
+
+float InterpolateDetailPalette(const std::array<std::uint8_t, 4>& palette, float x, float z)
+{
+    const float top = static_cast<float>(palette[0]) * (1.f - x) +
+        static_cast<float>(palette[1]) * x;
+    const float bottom = static_cast<float>(palette[2]) * (1.f - x) +
+        static_cast<float>(palette[3]) * x;
+    return top * (1.f - z) + bottom * z;
+}
 
 std::size_t DeclarationTypeSize(std::uint8_t type)
 {
@@ -117,13 +197,16 @@ void DecodeNormal(const std::uint8_t* source, const D3DVERTEXELEMENT9* element, 
     }
 }
 
-std::uint8_t PackedAlpha(const std::uint8_t* source, const D3DVERTEXELEMENT9* element)
+float PackedAlphaFraction(const std::uint8_t* source, const D3DVERTEXELEMENT9* element)
 {
     if (!element || element->Type != D3DDECLTYPE_D3DCOLOR)
-        return 0;
+        return 0.f;
     std::uint32_t packed{};
     std::memcpy(&packed, source + element->Offset, sizeof(packed));
-    return static_cast<std::uint8_t>(packed >> 24);
+    // D3DDECLTYPE_D3DCOLOR reaches the shader as a normalized color. X-Ray
+    // stores the fractional part of its compressed base UV in tangent/binormal
+    // alpha, so unpack_tc_base adds alpha in the 0..1 range, not the raw byte.
+    return static_cast<float>(static_cast<std::uint8_t>(packed >> 24)) / 255.f;
 }
 
 void DecodeTexcoord(const std::uint8_t* source, const std::vector<D3DVERTEXELEMENT9>& declaration,
@@ -148,8 +231,34 @@ void DecodeTexcoord(const std::uint8_t* source, const std::vector<D3DVERTEXELEME
         const auto* tangent = FindDeclarationElement(declaration, D3DDECLUSAGE_TANGENT);
         const auto* binormal = FindDeclarationElement(declaration, D3DDECLUSAGE_BINORMAL);
         constexpr float scale = 32.0f / 32768.0f;
-        vertex.u = static_cast<float>(packed[0] + PackedAlpha(source, tangent)) * scale;
-        vertex.v = static_cast<float>(packed[1] + PackedAlpha(source, binormal)) * scale;
+        vertex.u = (static_cast<float>(packed[0]) + PackedAlphaFraction(source, tangent)) * scale;
+        vertex.v = (static_cast<float>(packed[1]) + PackedAlphaFraction(source, binormal)) * scale;
+    }
+}
+
+void DecodeLightmapTexcoord(const std::uint8_t* source,
+    const std::vector<D3DVERTEXELEMENT9>& declaration, AndroidVulkanWorldVertex& vertex)
+{
+    const auto* texcoord = FindDeclarationElement(
+        declaration, D3DDECLUSAGE_TEXCOORD, 1);
+    if (!texcoord)
+        return;
+
+    const std::uint8_t* value = source + texcoord->Offset;
+    if (texcoord->Type == D3DDECLTYPE_FLOAT2 || texcoord->Type == D3DDECLTYPE_FLOAT3 ||
+        texcoord->Type == D3DDECLTYPE_FLOAT4)
+    {
+        std::memcpy(&vertex.u2, value, sizeof(float) * 2);
+        return;
+    }
+
+    if (texcoord->Type == D3DDECLTYPE_SHORT2 || texcoord->Type == D3DDECLTYPE_SHORT4)
+    {
+        std::int16_t packed[2]{};
+        std::memcpy(packed, value, sizeof(packed));
+        constexpr float scale = 1.0f / 32768.0f;
+        vertex.u2 = static_cast<float>(packed[0]) * scale;
+        vertex.v2 = static_cast<float>(packed[1]) * scale;
     }
 }
 
@@ -208,6 +317,7 @@ bool ReadLevelVertexBuffers(CStreamReader& geometry, std::vector<AndroidLevelVer
             std::memcpy(&vertex.x, source.data() + position->Offset, sizeof(float) * 3);
             DecodeNormal(source.data(), normal, vertex);
             DecodeTexcoord(source.data(), declaration, vertex);
+            DecodeLightmapTexcoord(source.data(), declaration, vertex);
             combinedVertices.push_back(vertex);
         }
     }
@@ -235,6 +345,68 @@ bool ReadLevelIndexBuffers(CStreamReader& geometry, std::vector<AndroidLevelInde
     }
     chunk->close();
     return true;
+}
+
+bool ReadLevelSlidingWindows(CStreamReader& geometry,
+    std::vector<AndroidLevelSlidingWindow>& slidingWindows)
+{
+    CStreamReader* chunk = geometry.open_chunk(fsL_SWIS);
+    if (!chunk)
+        return true;
+
+    const std::uint32_t itemCount = chunk->r_u32();
+    slidingWindows.resize(itemCount);
+    for (AndroidLevelSlidingWindow& item : slidingWindows)
+    {
+        // The four reserved values are part of the on-disk format.
+        chunk->r_u32();
+        chunk->r_u32();
+        chunk->r_u32();
+        chunk->r_u32();
+        const std::uint32_t windowCount = chunk->r_u32();
+        if (windowCount > chunk->elapsed() / sizeof(FSlideWindow))
+        {
+            chunk->close();
+            slidingWindows.clear();
+            return false;
+        }
+        item.windows.resize(windowCount);
+        if (windowCount != 0)
+            chunk->r(item.windows.data(), item.windows.size() * sizeof(FSlideWindow));
+    }
+    chunk->close();
+    return true;
+}
+
+bool ReadVisualSlidingWindow(IReader& visual,
+    const std::vector<AndroidLevelSlidingWindow>& levelWindows, FSlideWindow& window)
+{
+    if (visual.find_chunk(OGF_SWIDATA) != 0)
+    {
+        // Progressive visuals keep their own SWI array. Window zero is the
+        // full-resolution range used when LOD is maximal.
+        visual.r_u32();
+        visual.r_u32();
+        visual.r_u32();
+        visual.r_u32();
+        const std::uint32_t count = visual.r_u32();
+        if (count != 0 && visual.elapsed() >= sizeof(FSlideWindow))
+        {
+            visual.r(&window, sizeof(window));
+            return true;
+        }
+    }
+
+    if (visual.find_chunk(OGF_SWICONTAINER) != 0)
+    {
+        const std::uint32_t id = visual.r_u32();
+        if (id < levelWindows.size() && !levelWindows[id].windows.empty())
+        {
+            window = levelWindows[id].windows.front();
+            return true;
+        }
+    }
+    return false;
 }
 
 void AppendCircle(std::vector<AndroidVulkanUiVertex>& vertices, float x, float y,
@@ -429,6 +601,280 @@ void AndroidVulkanRenderDevice::create() {}
 void AndroidVulkanRenderDevice::destroy() {}
 void AndroidVulkanRenderDevice::reset_begin() {}
 void AndroidVulkanRenderDevice::reset_end() {}
+
+void AndroidVulkanRenderDevice::LoadLevelDetails()
+{
+    ClearLevelDetails();
+    IReader* details = FS.r_open("$level$", "level.details");
+    if (!details)
+        return;
+
+    AndroidDetailHeader header{};
+    if (!details->r_chunk_safe(0, &header, sizeof(header)) || header.version != 3 ||
+        header.objectCount == 0 || header.objectCount > 63 || header.sizeX == 0 || header.sizeZ == 0)
+    {
+        __android_log_write(ANDROID_LOG_WARN, LogTag,
+            "Android Vulkan: level.details has an unsupported header");
+        FS.r_close(details);
+        return;
+    }
+
+    IReader* objects = details->open_chunk(1);
+    IReader* slots = details->open_chunk(2);
+    const std::uint64_t slotCount = static_cast<std::uint64_t>(header.sizeX) * header.sizeZ;
+    if (!objects || !slots || slotCount > std::numeric_limits<std::uint32_t>::max() ||
+        slots->length() < slotCount * sizeof(AndroidDetailSlotRaw))
+    {
+        if (objects)
+            objects->close();
+        if (slots)
+            slots->close();
+        FS.r_close(details);
+        __android_log_write(ANDROID_LOG_WARN, LogTag,
+            "Android Vulkan: level.details is incomplete");
+        return;
+    }
+
+    detailModels.reserve(header.objectCount);
+    bool modelsValid = true;
+    for (std::uint32_t modelIndex = 0; modelIndex < header.objectCount; ++modelIndex)
+    {
+        IReader* source = objects->open_chunk(modelIndex);
+        if (!source)
+        {
+            modelsValid = false;
+            break;
+        }
+
+        string256 shaderName{};
+        string256 textureName{};
+        source->r_stringZ(shaderName, sizeof(shaderName));
+        source->r_stringZ(textureName, sizeof(textureName));
+        source->r_u32(); // detail flags (waving is added after static details)
+
+        DetailModel model{};
+        model.textureName = textureName;
+        model.minimumScale = source->r_float();
+        model.maximumScale = source->r_float();
+        const std::uint32_t vertexCount = source->r_u32();
+        const std::uint32_t indexCount = source->r_u32();
+        const std::uint64_t geometryBytes = static_cast<std::uint64_t>(vertexCount) *
+            sizeof(DetailModel::Vertex) + static_cast<std::uint64_t>(indexCount) *
+            sizeof(std::uint16_t);
+        if (vertexCount == 0 || indexCount == 0 || vertexCount > 65535 ||
+            indexCount > 1024 * 1024 || geometryBytes > static_cast<std::uint64_t>(source->elapsed()))
+        {
+            source->close();
+            modelsValid = false;
+            break;
+        }
+        static_assert(sizeof(DetailModel::Vertex) == sizeof(Fvector) + sizeof(float) * 2);
+        model.vertices.resize(vertexCount);
+        model.indices.resize(indexCount);
+        source->r(model.vertices.data(), model.vertices.size() * sizeof(DetailModel::Vertex));
+        source->r(model.indices.data(), model.indices.size() * sizeof(std::uint16_t));
+        source->close();
+        detailModels.push_back(std::move(model));
+    }
+    objects->close();
+
+    if (modelsValid && detailModels.size() == header.objectCount)
+    {
+        detailSlots.resize(static_cast<std::size_t>(slotCount));
+        for (DetailSlot& destination : detailSlots)
+        {
+            AndroidDetailSlotRaw source{};
+            slots->r(&source, sizeof(source));
+            destination.minimumY = static_cast<float>(source.yBase) * .2f - 200.f;
+            destination.height = static_cast<float>(source.yHeight) * .1f;
+            destination.modelIds = {static_cast<std::uint8_t>(source.id0),
+                static_cast<std::uint8_t>(source.id1), static_cast<std::uint8_t>(source.id2),
+                static_cast<std::uint8_t>(source.id3)};
+            for (std::size_t paletteIndex = 0; paletteIndex < destination.palette.size(); ++paletteIndex)
+            {
+                const AndroidDetailPalette& palette = source.palette[paletteIndex];
+                destination.palette[paletteIndex] = {static_cast<std::uint8_t>(palette.a0),
+                    static_cast<std::uint8_t>(palette.a1), static_cast<std::uint8_t>(palette.a2),
+                    static_cast<std::uint8_t>(palette.a3)};
+            }
+        }
+        detailSlotsX = header.sizeX;
+        detailSlotsZ = header.sizeZ;
+        detailOffsetX = header.offsetX;
+        detailOffsetZ = header.offsetZ;
+        __android_log_print(ANDROID_LOG_INFO, LogTag,
+            "Android Vulkan: loaded level details: %zu models, %zu slots",
+            detailModels.size(), detailSlots.size());
+    }
+    else
+    {
+        detailModels.clear();
+        __android_log_write(ANDROID_LOG_WARN, LogTag,
+            "Android Vulkan: failed to decode detail models");
+    }
+
+    slots->close();
+    FS.r_close(details);
+}
+
+void AndroidVulkanRenderDevice::UpdateLevelDetails()
+{
+    if (detailModels.empty() || detailSlots.empty() || !g_pGameLevel)
+        return;
+
+    constexpr float slotSize = 2.f;
+    constexpr std::int32_t slotRadius = 12;
+    const std::int32_t centerX = iFloor(Device.vCameraPosition.x / slotSize + .5f) + detailOffsetX;
+    const std::int32_t centerZ = iFloor(Device.vCameraPosition.z / slotSize + .5f) + detailOffsetZ;
+    if (detailCenterValid && std::abs(centerX - detailCenterX) < 3 &&
+        std::abs(centerZ - detailCenterZ) < 3)
+    {
+        return;
+    }
+    detailCenterX = centerX;
+    detailCenterZ = centerZ;
+    detailCenterValid = true;
+
+    for (DetailModel& model : detailModels)
+    {
+        if (model.mesh != 0)
+            renderer.DestroyWorldMesh(model.mesh);
+        model.mesh = 0;
+        model.drawIndexCount = 0;
+    }
+
+    std::vector<std::vector<AndroidVulkanWorldVertex>> generatedVertices(detailModels.size());
+    std::vector<std::vector<std::uint16_t>> generatedIndices(detailModels.size());
+    CDB::COLLIDER groundCollider;
+    const Fvector down = Fvector().set(0.f, -1.f, 0.f);
+    const CDB::MODEL* collision = g_pGameLevel->ObjectSpace.GetStaticModel();
+    std::size_t instanceCount = 0;
+
+    const std::int32_t minimumSlotX = std::max(0, centerX - slotRadius);
+    const std::int32_t maximumSlotX = std::min(static_cast<std::int32_t>(detailSlotsX) - 1,
+        centerX + slotRadius);
+    const std::int32_t minimumSlotZ = std::max(0, centerZ - slotRadius);
+    const std::int32_t maximumSlotZ = std::min(static_cast<std::int32_t>(detailSlotsZ) - 1,
+        centerZ + slotRadius);
+    constexpr std::array<float, 4> sampleX{.22f, .72f, .28f, .78f};
+    constexpr std::array<float, 4> sampleZ{.25f, .30f, .75f, .70f};
+
+    for (std::int32_t slotZ = minimumSlotZ; slotZ <= maximumSlotZ; ++slotZ)
+    {
+        for (std::int32_t slotX = minimumSlotX; slotX <= maximumSlotX; ++slotX)
+        {
+            const DetailSlot& slot = detailSlots[static_cast<std::size_t>(slotZ) * detailSlotsX + slotX];
+            const float slotMinimumX = static_cast<float>(slotX - detailOffsetX) * slotSize;
+            const float slotMinimumZ = static_cast<float>(slotZ - detailOffsetZ) * slotSize;
+            for (std::uint32_t sample = 0; sample < sampleX.size(); ++sample)
+            {
+                std::size_t selectedLayer = 4;
+                float selectedWeight = 0.f;
+                for (std::size_t layer = 0; layer < 4; ++layer)
+                {
+                    if (slot.modelIds[layer] >= detailModels.size())
+                        continue;
+                    const float weight = InterpolateDetailPalette(
+                        slot.palette[layer], sampleX[sample], sampleZ[sample]);
+                    if (weight > selectedWeight)
+                    {
+                        selectedWeight = weight;
+                        selectedLayer = layer;
+                    }
+                }
+                if (selectedLayer == 4 || selectedWeight <= 0.f)
+                    continue;
+
+                const std::uint32_t hash = DetailHash(slotX, slotZ, sample);
+                const float selection = static_cast<float>(hash & 0xffffu) / 65535.f;
+                if (selection > selectedWeight / 15.f)
+                    continue;
+
+                const std::size_t modelIndex = slot.modelIds[selectedLayer];
+                const DetailModel& model = detailModels[modelIndex];
+                auto& vertices = generatedVertices[modelIndex];
+                auto& indices = generatedIndices[modelIndex];
+                if (vertices.size() + model.vertices.size() > 65535)
+                    continue;
+
+                const float jitterX = (static_cast<float>((hash >> 16) & 0xffu) / 255.f - .5f) * .34f;
+                const float jitterZ = (static_cast<float>((hash >> 24) & 0xffu) / 255.f - .5f) * .34f;
+                const float worldX = slotMinimumX + sampleX[sample] * slotSize + jitterX;
+                const float worldZ = slotMinimumZ + sampleZ[sample] * slotSize + jitterZ;
+                Fvector rayStart;
+                rayStart.set(worldX, slot.minimumY + slot.height + 2.f, worldZ);
+                groundCollider.ray_query(CDB::OPT_ONLYNEAREST, collision, rayStart, down,
+                    slot.height + 4.f);
+                if (groundCollider.r_count() == 0)
+                    continue;
+                const float worldY = rayStart.y - groundCollider.r_begin()->range;
+
+                const float scaleWeight = static_cast<float>((hash >> 8) & 0xffffu) / 65535.f;
+                const float scale = model.minimumScale +
+                    (model.maximumScale - model.minimumScale) * scaleWeight;
+                const float angle = static_cast<float>(hash) / static_cast<float>(
+                    std::numeric_limits<std::uint32_t>::max()) * PI_MUL_2;
+                const float sine = std::sin(angle);
+                const float cosine = std::cos(angle);
+                const std::uint16_t vertexBase = static_cast<std::uint16_t>(vertices.size());
+                for (const DetailModel::Vertex& source : model.vertices)
+                {
+                    AndroidVulkanWorldVertex vertex{};
+                    vertex.x = worldX + (source.position.x * cosine + source.position.z * sine) * scale;
+                    vertex.y = worldY + source.position.y * scale;
+                    vertex.z = worldZ + (-source.position.x * sine + source.position.z * cosine) * scale;
+                    vertex.ny = 1.f;
+                    vertex.u = source.u;
+                    vertex.v = source.v;
+                    vertices.push_back(vertex);
+                }
+                for (std::uint16_t index : model.indices)
+                    indices.push_back(static_cast<std::uint16_t>(vertexBase + index));
+                ++instanceCount;
+            }
+        }
+    }
+
+    for (std::size_t modelIndex = 0; modelIndex < detailModels.size(); ++modelIndex)
+    {
+        DetailModel& model = detailModels[modelIndex];
+        auto& vertices = generatedVertices[modelIndex];
+        auto& indices = generatedIndices[modelIndex];
+        if (vertices.empty() || indices.empty())
+            continue;
+        if (model.texture == 0 && !model.textureName.empty())
+        {
+            std::uint32_t width = 0;
+            std::uint32_t height = 0;
+            AndroidLoadVulkanTexture(*this, model.textureName.c_str(), model.texture, width, height);
+        }
+        model.mesh = renderer.CreateWorldMesh(
+            vertices.data(), vertices.size(), indices.data(), indices.size());
+        if (model.mesh != 0)
+            model.drawIndexCount = static_cast<std::uint32_t>(indices.size());
+    }
+
+    __android_log_print(ANDROID_LOG_INFO, LogTag,
+        "Android Vulkan: rebuilt nearby detail geometry: %zu instances around slot %d,%d",
+        instanceCount, centerX, centerZ);
+}
+
+void AndroidVulkanRenderDevice::ClearLevelDetails()
+{
+    for (DetailModel& model : detailModels)
+    {
+        if (model.mesh != 0)
+            renderer.DestroyWorldMesh(model.mesh);
+    }
+    detailModels.clear();
+    detailSlots.clear();
+    detailSlotsX = 0;
+    detailSlotsZ = 0;
+    detailOffsetX = 0;
+    detailOffsetZ = 0;
+    detailCenterValid = false;
+}
+
 void AndroidVulkanRenderDevice::level_Load(IReader* level)
 {
     level_Unload();
@@ -444,10 +890,12 @@ void AndroidVulkanRenderDevice::level_Load(IReader* level)
 
     std::vector<AndroidLevelVertexBuffer> vertexBuffers;
     std::vector<AndroidLevelIndexBuffer> indexBuffers;
+    std::vector<AndroidLevelSlidingWindow> slidingWindows;
     std::vector<AndroidVulkanWorldVertex> vertices;
     std::vector<std::uint16_t> indices;
     const bool geometryLoaded = ReadLevelVertexBuffers(*geometry, vertexBuffers, vertices) &&
-        ReadLevelIndexBuffers(*geometry, indexBuffers, indices);
+        ReadLevelIndexBuffers(*geometry, indexBuffers, indices) &&
+        ReadLevelSlidingWindows(*geometry, slidingWindows);
     FS.r_close(geometry);
     if (!geometryLoaded)
     {
@@ -463,11 +911,11 @@ void AndroidVulkanRenderDevice::level_Load(IReader* level)
         return;
     }
 
-    std::vector<std::string> materialTextures;
+    std::vector<AndroidLevelMaterial> materials;
     if (IReader* shaders = level->open_chunk(fsL_SHADERS))
     {
         const std::uint32_t shaderCount = shaders->r_u32();
-        materialTextures.resize(shaderCount);
+        materials.resize(shaderCount);
         for (std::uint32_t shaderIndex = 0; shaderIndex < shaderCount; ++shaderIndex)
         {
             string512 material{};
@@ -475,10 +923,28 @@ void AndroidVulkanRenderDevice::level_Load(IReader* level)
             const char* textureList = std::strchr(material, '/');
             if (!textureList || !textureList[1])
                 continue;
+            materials[shaderIndex].shaderName.assign(material,
+                static_cast<std::size_t>(textureList - material));
             ++textureList;
             const char* comma = std::strchr(textureList, ',');
-            materialTextures[shaderIndex].assign(textureList,
+            materials[shaderIndex].baseTexture.assign(textureList,
                 comma ? static_cast<std::size_t>(comma - textureList) : std::strlen(textureList));
+            if (comma && comma[1])
+            {
+                const char* lightmap = comma + 1;
+                const char* nextComma = std::strchr(lightmap, ',');
+                materials[shaderIndex].lightmapTexture.assign(lightmap,
+                    nextComma ? static_cast<std::size_t>(nextComma - lightmap) :
+                                std::strlen(lightmap));
+                if (nextComma && nextComma[1])
+                {
+                    const char* hemi = nextComma + 1;
+                    const char* hemiEnd = std::strchr(hemi, ',');
+                    materials[shaderIndex].hemiTexture.assign(hemi,
+                        hemiEnd ? static_cast<std::size_t>(hemiEnd - hemi) :
+                                  std::strlen(hemi));
+                }
+            }
         }
         shaders->close();
     }
@@ -508,17 +974,76 @@ void AndroidVulkanRenderDevice::level_Load(IReader* level)
                 indexCount <= indexBuffers[indexBuffer].indices.size() - indexBase)
             {
                 LevelDraw draw{};
+                draw.transform.identity();
+                if (hasHeader)
+                {
+                    draw.boundsCenter.set(header.bs.c);
+                    draw.boundsRadius = header.bs.r;
+                }
                 draw.firstIndex = indexBuffers[indexBuffer].combinedBase + indexBase;
                 draw.indexCount = indexCount;
                 draw.vertexOffset = static_cast<std::int32_t>(
                     vertexBuffers[vertexBuffer].combinedBase + vertexBase);
-                if (hasHeader && header.shader_id < materialTextures.size() &&
-                    !materialTextures[header.shader_id].empty())
+                if (hasHeader && (header.type == MT_PROGRESSIVE || header.type == MT_TREE_PM))
                 {
-                    std::uint32_t textureWidth = 0;
-                    std::uint32_t textureHeight = 0;
-                    AndroidLoadVulkanTexture(*this, materialTextures[header.shader_id].c_str(),
-                        draw.texture, textureWidth, textureHeight);
+                    FSlideWindow window{};
+                    if (ReadVisualSlidingWindow(*visual, slidingWindows, window) &&
+                        window.offset <= indexCount &&
+                        static_cast<std::uint32_t>(window.num_tris) * 3u <= indexCount - window.offset)
+                    {
+                        draw.firstIndex += window.offset;
+                        draw.indexCount = static_cast<std::uint32_t>(window.num_tris) * 3u;
+                    }
+                    else
+                    {
+                        __android_log_print(ANDROID_LOG_WARN, LogTag,
+                            "Android Vulkan: visual %u has no valid full-resolution sliding window",
+                            visualIndex);
+                        visual->close();
+                        continue;
+                    }
+                }
+                if (hasHeader && (header.type == MT_TREE_ST || header.type == MT_TREE_PM) &&
+                    visual->find_chunk(OGF_TREEDEF2) != 0)
+                {
+                    visual->r(&draw.transform, sizeof(draw.transform));
+                    draw.materialFlags |= 8u;
+                }
+                if (hasHeader && header.shader_id < materials.size())
+                {
+                    const AndroidLevelMaterial& material = materials[header.shader_id];
+                    if (material.shaderName.find("aref") != std::string::npos ||
+                        material.shaderName.find("alpha") != std::string::npos)
+                    {
+                        draw.materialFlags |= 8u;
+                    }
+                    if (!material.baseTexture.empty())
+                    {
+                        std::uint32_t textureWidth = 0;
+                        std::uint32_t textureHeight = 0;
+                        AndroidLoadVulkanTexture(*this, material.baseTexture.c_str(),
+                            draw.texture, textureWidth, textureHeight);
+                    }
+                    if (!material.lightmapTexture.empty())
+                    {
+                        std::uint32_t textureWidth = 0;
+                        std::uint32_t textureHeight = 0;
+                        if (AndroidLoadVulkanTexture(*this, material.lightmapTexture.c_str(),
+                                draw.lightmapTexture, textureWidth, textureHeight))
+                        {
+                            draw.materialFlags |= 1u;
+                        }
+                    }
+                    if (!material.hemiTexture.empty())
+                    {
+                        std::uint32_t textureWidth = 0;
+                        std::uint32_t textureHeight = 0;
+                        if (AndroidLoadVulkanTexture(*this, material.hemiTexture.c_str(),
+                                draw.hemiTexture, textureWidth, textureHeight))
+                        {
+                            draw.materialFlags |= 2u;
+                        }
+                    }
                 }
                 levelDraws.push_back(draw);
             }
@@ -552,6 +1077,7 @@ void AndroidVulkanRenderDevice::level_Load(IReader* level)
     __android_log_print(ANDROID_LOG_INFO, LogTag,
         "Android Vulkan: uploaded level geometry: %zu vertices, %zu indices, %zu draws",
         vertices.size(), indices.size(), levelDraws.size());
+    LoadLevelDetails();
     AndroidTouchControlsSetGameplayActive(true);
 }
 
@@ -562,6 +1088,7 @@ void AndroidVulkanRenderDevice::level_Unload()
         renderer.DestroyWorldMesh(levelMesh);
     levelMesh = 0;
     levelDraws.clear();
+    ClearLevelDetails();
     ClearDynamicMeshes();
 }
 
@@ -643,8 +1170,23 @@ void AndroidVulkanRenderDevice::add_Visual(
         draw.mesh = cached.mesh;
         draw.indexCount = cached.indexCount;
         draw.texture = cached.texture;
+        draw.hud = root && root->renderable_HUD();
+        Fmatrix fullTransform;
+        if (draw.hud)
+        {
+            const float farPlane = g_pGamePersistent ?
+                g_pGamePersistent->Environment().CurrentEnv.far_plane : VIEWPORT_NEAR + 500.f;
+            Fmatrix hudProjection;
+            hudProjection.build_projection(deg2rad(psHUD_FOV * Device.fFOV),
+                Device.fASPECT, HUD_VIEWPORT_NEAR, farPlane);
+            fullTransform.mul(hudProjection, Device.mView);
+        }
+        else
+        {
+            fullTransform.set(Device.mFullTransform);
+        }
         Fmatrix worldViewProjection;
-        worldViewProjection.mul(Device.mFullTransform, transform);
+        worldViewProjection.mul(fullTransform, transform);
         std::memcpy(draw.worldViewProjection, &worldViewProjection._11,
             sizeof(draw.worldViewProjection));
         dynamicDraws.push_back(draw);
@@ -730,6 +1272,8 @@ void AndroidVulkanRenderDevice::Calculate()
     if (!g_pGamePersistent)
         return;
 
+    UpdateLevelDetails();
+
     CFrustum view;
     view.CreateFromMatrix(Device.mFullTransform, FRUSTUM_P_ALL);
     xr_vector<ISpatial*> renderables;
@@ -741,19 +1285,51 @@ void AndroidVulkanRenderDevice::Calculate()
         if (renderable)
             renderable->renderable_Render(PrimaryContext, renderable);
     }
+
+    // The regular render graph invokes the HUD after world renderables. The
+    // Android renderer owns its graph, so submit the real hands/weapon visuals
+    // explicitly instead of leaving the weapon slot as UI-only state.
+    if (g_pGameLevel && g_pGameLevel->pHUD)
+        g_pGameLevel->pHUD->Render_Last(PrimaryContext);
 }
 void AndroidVulkanRenderDevice::Render()
 {
-    const float* worldViewProjection = &Device.mFullTransform._11;
+    CFrustum view;
+    view.CreateFromMatrix(Device.mFullTransform, FRUSTUM_P_ALL);
+    std::size_t visibleLevelDraws = 0;
     if (levelMesh != 0)
     {
         for (const auto& draw : levelDraws)
+        {
+            if (draw.boundsRadius > EPS_S &&
+                !view.testSphere_dirty(draw.boundsCenter, draw.boundsRadius))
+            {
+                continue;
+            }
+            Fmatrix worldViewProjection;
+            worldViewProjection.mul(Device.mFullTransform, draw.transform);
             renderer.SubmitWorldMesh(levelMesh, draw.firstIndex, draw.indexCount,
-                draw.vertexOffset, worldViewProjection, draw.texture);
+                draw.vertexOffset, &worldViewProjection._11, draw.texture,
+                draw.lightmapTexture, draw.hemiTexture, draw.materialFlags);
+            ++visibleLevelDraws;
+        }
+    }
+    for (const DetailModel& model : detailModels)
+    {
+        if (model.mesh != 0 && model.drawIndexCount != 0)
+            renderer.SubmitWorldMesh(model.mesh, 0, model.drawIndexCount, 0,
+                &Device.mFullTransform._11, model.texture, 0, 0, 8u);
     }
     for (const DynamicDraw& draw : dynamicDraws)
         renderer.SubmitWorldMesh(draw.mesh, 0, draw.indexCount, 0,
-            draw.worldViewProjection, draw.texture);
+            draw.worldViewProjection, draw.texture, 0, 0, draw.hud ? 4u : 0u);
+
+    if (frameIndex != 0 && frameIndex % 300 == 0)
+    {
+        __android_log_print(ANDROID_LOG_DEBUG, LogTag,
+            "Android visibility: %zu/%zu static level draws submitted",
+            visibleLevelDraws, levelDraws.size());
+    }
 }
 void AndroidVulkanRenderDevice::RenderMenu()
 {
@@ -791,7 +1367,16 @@ void AndroidVulkanRenderDevice::RenderMenu()
     Device.fWidth_2 = savedHalfWidth;
     Device.fHeight_2 = savedHalfHeight;
 }
-void AndroidVulkanRenderDevice::BeforeWorldRender() {}
+void AndroidVulkanRenderDevice::BeforeWorldRender()
+{
+    if (!g_pGamePersistent)
+        return;
+    const Fvector3& sky = g_pGamePersistent->Environment().CurrentEnv.sky_color;
+    renderer.SetWorldClearColor(sky.x, sky.y, sky.z);
+    const CEnvDescriptor& environment = g_pGamePersistent->Environment().CurrentEnv;
+    renderer.SetWorldLighting(&environment.ambient.x, &environment.hemi_color.x,
+        &environment.sun_color.x, &environment.sun_dir.x);
+}
 void AndroidVulkanRenderDevice::AfterWorldRender() {}
 void AndroidVulkanRenderDevice::Screenshot(ScreenshotMode, pcstr) {}
 void AndroidVulkanRenderDevice::SetPostProcessParams(const SPPInfo&) {}
@@ -870,7 +1455,31 @@ void AndroidVulkanRenderDevice::Create(
 void AndroidVulkanRenderDevice::Reset(
     SDL_Window* targetWindow, u32& width, u32& height, float& halfWidth, float& halfHeight)
 {
-    Create(targetWindow, width, height, halfWidth, halfHeight);
+    if (!initialized)
+    {
+        Create(targetWindow, width, height, halfWidth, halfHeight);
+        return;
+    }
+
+    window = targetWindow;
+    UpdateDimensions(window, width, height, halfWidth, halfHeight);
+    failed = !renderer.RecreateSurface(window);
+    initialized = !failed;
+    if (initialized)
+    {
+        renderer.GetSurfaceSize(width, height);
+        halfWidth = static_cast<float>(width) * 0.5f;
+        halfHeight = static_cast<float>(height) * 0.5f;
+        __android_log_print(ANDROID_LOG_INFO, LogTag,
+            "Android Vulkan surface and GPU resources restored: %ux%u", width, height);
+    }
+    else
+    {
+        __android_log_write(ANDROID_LOG_ERROR, LogTag,
+            "Android Vulkan surface restoration failed");
+    }
+    frameIndex = 0;
+    frameLoopStart = SDL_GetPerformanceCounter();
 }
 
 void AndroidVulkanRenderDevice::ObtainRequiredWindowFlags(u32& windowFlags) { windowFlags |= SDL_WINDOW_VULKAN; }

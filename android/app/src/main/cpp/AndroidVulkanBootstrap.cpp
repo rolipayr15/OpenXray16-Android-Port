@@ -51,6 +51,7 @@ struct UiTexture
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     std::uint32_t width{};
     std::uint32_t height{};
+    std::vector<std::uint8_t> pixels;
 };
 
 struct WorldGpuMesh
@@ -61,6 +62,8 @@ struct WorldGpuMesh
     VkDeviceMemory indexMemory = VK_NULL_HANDLE;
     std::uint32_t vertexCount{};
     std::uint32_t indexCount{};
+    std::vector<AndroidVulkanWorldVertex> vertices;
+    std::vector<std::uint16_t> indices;
     bool alive{};
 };
 
@@ -71,13 +74,23 @@ struct WorldDraw
     std::uint32_t indexCount{};
     std::int32_t vertexOffset{};
     AndroidVulkanUiTexture texture{};
+    AndroidVulkanUiTexture lightmapTexture{};
+    AndroidVulkanUiTexture hemiTexture{};
+    std::uint32_t materialFlags{};
     float worldViewProjection[16]{};
 };
 
 struct WorldPushConstants
 {
     float worldViewProjection[16];
+    std::uint32_t materialFlags{};
+    std::uint32_t padding[3]{};
+    float ambientAndSunDirectionX[4]{};
+    float hemiAndSunDirectionY[4]{};
+    float sunColorAndDirectionZ[4]{};
 };
+
+static_assert(sizeof(WorldPushConstants) == 128);
 
 void LogVulkanError(const char* operation, VkResult result)
 {
@@ -309,6 +322,8 @@ public:
         if (!window || !appFilesPath || !appFilesPath[0])
             return false;
 
+        applicationFilesPath = appFilesPath;
+
         cacheDirectory = std::string(appFilesPath) + "/renderer-cache";
         cachePath = cacheDirectory + "/vulkan-pipeline-cache.bin";
         if (mkdir(cacheDirectory.c_str(), 0700) != 0 && errno != EEXIST)
@@ -322,6 +337,67 @@ public:
             CreatePipelineCache() && CreateSwapchain() && CreateGraphicsPipeline() && CreateCommands() &&
             CreateFallbackTexture() && SavePipelineCache();
         return initialized;
+    }
+
+    bool RecreateSurface(SDL_Window* sdlWindow)
+    {
+        if (!sdlWindow || applicationFilesPath.empty())
+            return false;
+
+        struct TextureSnapshot
+        {
+            std::string name;
+            std::uint32_t width{};
+            std::uint32_t height{};
+            std::vector<std::uint8_t> pixels;
+        };
+        struct MeshSnapshot
+        {
+            bool alive{};
+            std::vector<AndroidVulkanWorldVertex> vertices;
+            std::vector<std::uint16_t> indices;
+        };
+
+        std::vector<TextureSnapshot> textures;
+        textures.reserve(uiTextures.size());
+        for (const UiTexture& texture : uiTextures)
+            textures.push_back({texture.name, texture.width, texture.height, texture.pixels});
+
+        std::vector<MeshSnapshot> meshes;
+        meshes.reserve(worldMeshes.size());
+        for (const WorldGpuMesh& mesh : worldMeshes)
+            meshes.push_back({mesh.alive, mesh.vertices, mesh.indices});
+
+        const std::string filesPath = applicationFilesPath;
+        Shutdown();
+        if (!Initialize(sdlWindow, filesPath.c_str()))
+            return false;
+
+        // Initialize always recreates the fallback texture as handle 1. Rebuild
+        // every remaining texture and mesh in its original slot so handles held
+        // by UI, videos, the level and model caches stay valid across resume.
+        for (std::size_t index = 1; index < textures.size(); ++index)
+        {
+            const TextureSnapshot& texture = textures[index];
+            const AndroidVulkanUiTexture handle = CreateUiTexture(texture.name.c_str(),
+                texture.width, texture.height, texture.pixels.data(), texture.pixels.size());
+            if (handle != index + 1)
+                return false;
+        }
+        for (std::size_t index = 0; index < meshes.size(); ++index)
+        {
+            const MeshSnapshot& mesh = meshes[index];
+            if (!mesh.alive)
+            {
+                worldMeshes.emplace_back();
+                continue;
+            }
+            const AndroidVulkanWorldMesh handle = CreateWorldMesh(mesh.vertices.data(),
+                mesh.vertices.size(), mesh.indices.data(), mesh.indices.size());
+            if (handle != index + 1)
+                return false;
+        }
+        return true;
     }
 
     AndroidVulkanUiTexture CreateUiTexture(const char* name, std::uint32_t width,
@@ -342,6 +418,7 @@ public:
         if (!UploadUiTexture(width, height, rgbaPixels, byteCount, uploaded))
             return 0;
         uploaded.name = name;
+        uploaded.pixels.assign(rgbaPixels, rgbaPixels + byteCount);
 
         uiTextures.push_back(uploaded);
         const AndroidVulkanUiTexture handle = static_cast<AndroidVulkanUiTexture>(uiTextures.size());
@@ -456,6 +533,8 @@ public:
         if (result != VK_SUCCESS)
             LogVulkanError("submit dynamic UI texture upload", result);
         cleanup();
+        if (result == VK_SUCCESS)
+            texture.pixels.assign(rgbaPixels, rgbaPixels + byteCount);
         return result == VK_SUCCESS;
     }
 
@@ -505,6 +584,8 @@ public:
 
         mesh.vertexCount = static_cast<std::uint32_t>(vertexCount);
         mesh.indexCount = static_cast<std::uint32_t>(indexCount);
+        mesh.vertices.assign(vertices, vertices + vertexCount);
+        mesh.indices.assign(indices, indices + indexCount);
         mesh.alive = true;
         worldMeshes.push_back(mesh);
         return static_cast<AndroidVulkanWorldMesh>(worldMeshes.size());
@@ -529,6 +610,7 @@ public:
         }
         std::memcpy(mapped, vertices, static_cast<std::size_t>(vertexBytes));
         vkUnmapMemory(device, mesh.vertexMemory);
+        mesh.vertices.assign(vertices, vertices + vertexCount);
         return true;
     }
 
@@ -548,9 +630,28 @@ public:
         worldDraws.clear();
     }
 
+    void SetWorldClearColor(float red, float green, float blue)
+    {
+        worldClearColor[0] = std::clamp(red, 0.f, 1.f);
+        worldClearColor[1] = std::clamp(green, 0.f, 1.f);
+        worldClearColor[2] = std::clamp(blue, 0.f, 1.f);
+    }
+
+    void SetWorldLighting(const float* ambient, const float* hemi,
+        const float* sunColor, const float* sunDirection)
+    {
+        if (!ambient || !hemi || !sunColor || !sunDirection)
+            return;
+        std::copy_n(ambient, 3, worldAmbient);
+        std::copy_n(hemi, 3, worldHemi);
+        std::copy_n(sunColor, 3, worldSunColor);
+        std::copy_n(sunDirection, 3, worldSunDirection);
+    }
+
     void SubmitWorldMesh(AndroidVulkanWorldMesh handle, std::uint32_t firstIndex,
         std::uint32_t indexCount, std::int32_t vertexOffset, const float* worldViewProjection,
-        AndroidVulkanUiTexture texture)
+        AndroidVulkanUiTexture texture, AndroidVulkanUiTexture lightmapTexture,
+        AndroidVulkanUiTexture hemiTexture, std::uint32_t materialFlags)
     {
         if (handle == 0 || handle > worldMeshes.size() || !worldViewProjection)
             return;
@@ -567,6 +668,9 @@ public:
         draw.indexCount = indexCount;
         draw.vertexOffset = vertexOffset;
         draw.texture = texture;
+        draw.lightmapTexture = lightmapTexture;
+        draw.hemiTexture = hemiTexture;
+        draw.materialFlags = materialFlags;
         std::memcpy(draw.worldViewProjection, worldViewProjection, sizeof(draw.worldViewProjection));
         worldDraws.push_back(draw);
     }
@@ -1659,18 +1763,20 @@ private:
         worldBinding.binding = 0;
         worldBinding.stride = sizeof(AndroidVulkanWorldVertex);
         worldBinding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-        VkVertexInputAttributeDescription worldAttributes[3]{};
+        VkVertexInputAttributeDescription worldAttributes[4]{};
         worldAttributes[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT,
             static_cast<std::uint32_t>(offsetof(AndroidVulkanWorldVertex, x))};
         worldAttributes[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT,
             static_cast<std::uint32_t>(offsetof(AndroidVulkanWorldVertex, nx))};
         worldAttributes[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,
             static_cast<std::uint32_t>(offsetof(AndroidVulkanWorldVertex, u))};
+        worldAttributes[3] = {3, 0, VK_FORMAT_R32G32_SFLOAT,
+            static_cast<std::uint32_t>(offsetof(AndroidVulkanWorldVertex, u2))};
         VkPipelineVertexInputStateCreateInfo worldVertexInput{
             VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         worldVertexInput.vertexBindingDescriptionCount = 1;
         worldVertexInput.pVertexBindingDescriptions = &worldBinding;
-        worldVertexInput.vertexAttributeDescriptionCount = 3;
+        worldVertexInput.vertexAttributeDescriptionCount = 4;
         worldVertexInput.pVertexAttributeDescriptions = worldAttributes;
 
         VkPipelineInputAssemblyStateCreateInfo worldAssembly{
@@ -1690,11 +1796,13 @@ private:
         opaqueBlending.pAttachments = &opaqueAttachment;
 
         VkPushConstantRange worldPushConstant{};
-        worldPushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        worldPushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         worldPushConstant.size = sizeof(WorldPushConstants);
         VkPipelineLayoutCreateInfo worldLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-        worldLayoutInfo.setLayoutCount = 1;
-        worldLayoutInfo.pSetLayouts = &uiDescriptorSetLayout;
+        const VkDescriptorSetLayout worldSetLayouts[] = {
+            uiDescriptorSetLayout, uiDescriptorSetLayout, uiDescriptorSetLayout};
+        worldLayoutInfo.setLayoutCount = 3;
+        worldLayoutInfo.pSetLayouts = worldSetLayouts;
         worldLayoutInfo.pushConstantRangeCount = 1;
         worldLayoutInfo.pPushConstantRanges = &worldPushConstant;
         result = vkCreatePipelineLayout(device, &worldLayoutInfo, nullptr, &worldPipelineLayout);
@@ -1807,7 +1915,7 @@ private:
         }
 
         VkClearValue clears[2]{};
-        clears[0].color = {{0.015f, 0.02f, 0.018f, 1.0f}};
+        clears[0].color = {{worldClearColor[0], worldClearColor[1], worldClearColor[2], 1.0f}};
         clears[1].depthStencil = {1.0f, 0};
         VkRenderPassBeginInfo renderPassBegin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         renderPassBegin.renderPass = renderPass;
@@ -1821,33 +1929,67 @@ private:
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, worldPipeline);
             const VkRect2D worldScissor{{0, 0}, extent};
             vkCmdSetScissor(commandBuffer, 0, 1, &worldScissor);
-            AndroidVulkanWorldMesh boundMesh = 0;
-            for (const WorldDraw& draw : worldDraws)
+            const auto drawWorldPass = [&](bool hud)
             {
-                if (draw.mesh == 0 || draw.mesh > worldMeshes.size())
-                    continue;
-                const WorldGpuMesh& mesh = worldMeshes[static_cast<std::size_t>(draw.mesh - 1)];
-                if (!mesh.alive)
-                    continue;
-                if (boundMesh != draw.mesh)
+                AndroidVulkanWorldMesh boundMesh = 0;
+                for (const WorldDraw& draw : worldDraws)
                 {
-                    const VkDeviceSize offset = 0;
-                    vkCmdBindVertexBuffers(commandBuffer, 0, 1, &mesh.vertexBuffer, &offset);
-                    vkCmdBindIndexBuffer(commandBuffer, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
-                    boundMesh = draw.mesh;
+                    if (((draw.materialFlags & 4u) != 0u) != hud ||
+                        draw.mesh == 0 || draw.mesh > worldMeshes.size())
+                        continue;
+                    const WorldGpuMesh& mesh = worldMeshes[static_cast<std::size_t>(draw.mesh - 1)];
+                    if (!mesh.alive)
+                        continue;
+                    if (boundMesh != draw.mesh)
+                    {
+                        const VkDeviceSize offset = 0;
+                        vkCmdBindVertexBuffers(commandBuffer, 0, 1, &mesh.vertexBuffer, &offset);
+                        vkCmdBindIndexBuffer(commandBuffer, mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+                        boundMesh = draw.mesh;
+                    }
+                    WorldPushConstants constants{};
+                    std::memcpy(constants.worldViewProjection, draw.worldViewProjection,
+                        sizeof(constants.worldViewProjection));
+                    constants.materialFlags = draw.materialFlags;
+                    std::copy_n(worldAmbient, 3, constants.ambientAndSunDirectionX);
+                    constants.ambientAndSunDirectionX[3] = worldSunDirection[0];
+                    std::copy_n(worldHemi, 3, constants.hemiAndSunDirectionY);
+                    constants.hemiAndSunDirectionY[3] = worldSunDirection[1];
+                    std::copy_n(worldSunColor, 3, constants.sunColorAndDirectionZ);
+                    constants.sunColorAndDirectionZ[3] = worldSunDirection[2];
+                    vkCmdPushConstants(commandBuffer, worldPipelineLayout,
+                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                        0, sizeof(constants), &constants);
+                    const VkDescriptorSet descriptors[] = {
+                        GetUiDescriptor(draw.texture), GetUiDescriptor(draw.lightmapTexture),
+                        GetUiDescriptor(draw.hemiTexture)};
+                    if (descriptors[0] == VK_NULL_HANDLE || descriptors[1] == VK_NULL_HANDLE ||
+                        descriptors[2] == VK_NULL_HANDLE)
+                        continue;
+                    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        worldPipelineLayout, 0, 3, descriptors, 0, nullptr);
+                    vkCmdDrawIndexed(commandBuffer, draw.indexCount, 1,
+                        draw.firstIndex, draw.vertexOffset, 0);
                 }
-                WorldPushConstants constants{};
-                std::memcpy(constants.worldViewProjection, draw.worldViewProjection,
-                    sizeof(constants.worldViewProjection));
-                vkCmdPushConstants(commandBuffer, worldPipelineLayout,
-                    VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(constants), &constants);
-                const VkDescriptorSet descriptor = GetUiDescriptor(draw.texture);
-                if (descriptor == VK_NULL_HANDLE)
-                    continue;
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    worldPipelineLayout, 0, 1, &descriptor, 0, nullptr);
-                vkCmdDrawIndexed(commandBuffer, draw.indexCount, 1,
-                    draw.firstIndex, draw.vertexOffset, 0);
+            };
+
+            drawWorldPass(false);
+
+            const bool hasHud = std::any_of(worldDraws.begin(), worldDraws.end(), [](const WorldDraw& draw)
+            {
+                return (draw.materialFlags & 4u) != 0u;
+            });
+            if (hasHud)
+            {
+                // X-Ray's rmNear isolates HUD depth from scene depth. Clear only
+                // depth between passes so hands/weapons retain self-occlusion but
+                // can never be cut by terrain or nearby world geometry.
+                VkClearAttachment depthClear{};
+                depthClear.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                depthClear.clearValue.depthStencil = {1.f, 0};
+                const VkClearRect depthRect{{{0, 0}, extent}, 0, 1};
+                vkCmdClearAttachments(commandBuffer, 1, &depthClear, 1, &depthRect);
+                drawWorldPass(true);
             }
         }
         if (!uiVertices.empty())
@@ -2158,6 +2300,7 @@ private:
     SDL_Window* window = nullptr;
     std::string cacheDirectory;
     std::string cachePath;
+    std::string applicationFilesPath;
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
@@ -2187,6 +2330,11 @@ private:
     VkImageView depthImageView = VK_NULL_HANDLE;
     std::vector<WorldGpuMesh> worldMeshes;
     std::vector<WorldDraw> worldDraws;
+    float worldClearColor[3]{0.015f, 0.02f, 0.018f};
+    float worldAmbient[3]{0.08f, 0.08f, 0.08f};
+    float worldHemi[3]{0.25f, 0.25f, 0.25f};
+    float worldSunColor[3]{0.35f, 0.35f, 0.35f};
+    float worldSunDirection[3]{0.f, -1.f, 0.f};
     VkBuffer uiVertexBuffer = VK_NULL_HANDLE;
     VkDeviceMemory uiVertexMemory = VK_NULL_HANDLE;
     std::size_t uiVertexCapacity{};
@@ -2218,6 +2366,11 @@ AndroidVulkanRenderer::~AndroidVulkanRenderer() = default;
 bool AndroidVulkanRenderer::Initialize(SDL_Window* window, const char* appFilesPath)
 {
     return implementation->renderer.Initialize(window, appFilesPath);
+}
+
+bool AndroidVulkanRenderer::RecreateSurface(SDL_Window* window)
+{
+    return implementation->renderer.RecreateSurface(window);
 }
 
 AndroidVulkanUiTexture AndroidVulkanRenderer::CreateUiTexture(const char* name, std::uint32_t width,
@@ -2260,6 +2413,17 @@ void AndroidVulkanRenderer::BeginWorldFrame()
     implementation->renderer.BeginWorldFrame();
 }
 
+void AndroidVulkanRenderer::SetWorldClearColor(float red, float green, float blue)
+{
+    implementation->renderer.SetWorldClearColor(red, green, blue);
+}
+
+void AndroidVulkanRenderer::SetWorldLighting(const float* ambient, const float* hemi,
+    const float* sunColor, const float* sunDirection)
+{
+    implementation->renderer.SetWorldLighting(ambient, hemi, sunColor, sunDirection);
+}
+
 void AndroidVulkanRenderer::SubmitUiBatch(const AndroidVulkanUiVertex* vertices, std::size_t vertexCount,
     AndroidVulkanUiPrimitive primitive, const AndroidVulkanUiScissor& scissor,
     AndroidVulkanUiTexture texture, AndroidVulkanUiTextureMode textureMode)
@@ -2269,10 +2433,13 @@ void AndroidVulkanRenderer::SubmitUiBatch(const AndroidVulkanUiVertex* vertices,
 
 void AndroidVulkanRenderer::SubmitWorldMesh(AndroidVulkanWorldMesh mesh,
     std::uint32_t firstIndex, std::uint32_t indexCount, std::int32_t vertexOffset,
-    const float* worldViewProjection, AndroidVulkanUiTexture texture)
+    const float* worldViewProjection, AndroidVulkanUiTexture texture,
+    AndroidVulkanUiTexture lightmapTexture, AndroidVulkanUiTexture hemiTexture,
+    std::uint32_t materialFlags)
 {
     implementation->renderer.SubmitWorldMesh(
-        mesh, firstIndex, indexCount, vertexOffset, worldViewProjection, texture);
+        mesh, firstIndex, indexCount, vertexOffset, worldViewProjection, texture,
+        lightmapTexture, hemiTexture, materialFlags);
 }
 
 bool AndroidVulkanRenderer::DrawFrame(std::uint64_t frameIndex, float elapsedSeconds)

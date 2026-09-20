@@ -289,7 +289,23 @@ void CAI_Dog::start_animation()
 
     b_state_anim = true;
     com_man().script_capture(ControlCom::eControlAnimation);
-    smart_cast<IKinematicsAnimated*>(Visual())->PlayCycle(get_current_animation(), TRUE, animation_end, this);
+    IKinematicsAnimated* animated = smart_cast<IKinematicsAnimated*>(Visual());
+    MotionID motion = animated->ID_Cycle_Safe(get_current_animation());
+    if (!motion.valid())
+    {
+        // Some valid ShoC data sets omit one or more of the optional dog idle
+        // cycles. Keep the state machine functional by using the model's base
+        // standing idle instead of entering the fatal ID_Cycle path.
+        motion = animated->ID_Cycle_Safe("stand_idle_1");
+    }
+    if (!motion.valid())
+    {
+        b_state_anim = false;
+        b_anim_end = true;
+        com_man().script_release(ControlCom::eControlAnimation);
+        return;
+    }
+    animated->PlayCycle(motion, TRUE, animation_end, this);
     b_state_end = true;
 }
 

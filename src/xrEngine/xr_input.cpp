@@ -183,10 +183,10 @@ void UpdateMovement(float x, float y)
     constexpr float threshold = 0.025f;
     PushVirtualKey(SDL_SCANCODE_W, dy < -threshold);
     PushVirtualKey(SDL_SCANCODE_S, dy > threshold);
-    // The Vulkan 3D pass is rotated into Android surface orientation, so its
-    // screen-space horizontal direction is opposite to SDL touch X.
-    PushVirtualKey(SDL_SCANCODE_A, dx > threshold);
-    PushVirtualKey(SDL_SCANCODE_D, dx < -threshold);
+    // Input remains in physical screen coordinates. The renderer corrects
+    // X-Ray's 3D surface orientation without changing movement semantics.
+    PushVirtualKey(SDL_SCANCODE_A, dx < -threshold);
+    PushVirtualKey(SDL_SCANCODE_D, dx > threshold);
 }
 
 int HitTouchButton(float x, float y)
@@ -501,7 +501,7 @@ void AndroidTouchUpdate()
                 SDL_Event motion{};
                 motion.type = SDL_MOUSEMOTION;
                 motion.motion.which = 0;
-                motion.motion.xrel = -static_cast<int>((finger.x - AndroidTouch.lookX) * width * 1.35f);
+                motion.motion.xrel = static_cast<int>((finger.x - AndroidTouch.lookX) * width * 1.35f);
                 motion.motion.yrel = static_cast<int>((finger.y - AndroidTouch.lookY) * height * 1.35f);
                 motion.motion.x = static_cast<int>(finger.x * width);
                 motion.motion.y = static_cast<int>(finger.y * height);

@@ -45,6 +45,8 @@ struct AndroidVulkanWorldVertex
     float nz;
     float u;
     float v;
+    float u2;
+    float v2;
 };
 
 using AndroidVulkanWorldMesh = std::uint64_t;
@@ -70,6 +72,7 @@ public:
     AndroidVulkanRenderer& operator=(const AndroidVulkanRenderer&) = delete;
 
     bool Initialize(SDL_Window* window, const char* appFilesPath);
+    bool RecreateSurface(SDL_Window* window);
     AndroidVulkanUiTexture CreateUiTexture(const char* name, std::uint32_t width,
         std::uint32_t height, const std::uint8_t* rgbaPixels, std::size_t byteCount);
     bool UpdateUiTexture(AndroidVulkanUiTexture texture,
@@ -81,13 +84,18 @@ public:
     void DestroyWorldMesh(AndroidVulkanWorldMesh mesh);
     void BeginUiFrame();
     void BeginWorldFrame();
+    void SetWorldClearColor(float red, float green, float blue);
+    void SetWorldLighting(const float* ambient, const float* hemi,
+        const float* sunColor, const float* sunDirection);
     void SubmitUiBatch(const AndroidVulkanUiVertex* vertices, std::size_t vertexCount,
         AndroidVulkanUiPrimitive primitive, const AndroidVulkanUiScissor& scissor,
         AndroidVulkanUiTexture texture,
         AndroidVulkanUiTextureMode textureMode = AndroidVulkanUiTextureMode::Normal);
     void SubmitWorldMesh(AndroidVulkanWorldMesh mesh, std::uint32_t firstIndex,
         std::uint32_t indexCount, std::int32_t vertexOffset,
-        const float* worldViewProjection, AndroidVulkanUiTexture texture);
+        const float* worldViewProjection, AndroidVulkanUiTexture texture,
+        AndroidVulkanUiTexture lightmapTexture = 0,
+        AndroidVulkanUiTexture hemiTexture = 0, std::uint32_t materialFlags = 0);
     bool DrawFrame(std::uint64_t frameIndex, float elapsedSeconds);
     void GetSurfaceSize(std::uint32_t& width, std::uint32_t& height) const;
     void Shutdown();

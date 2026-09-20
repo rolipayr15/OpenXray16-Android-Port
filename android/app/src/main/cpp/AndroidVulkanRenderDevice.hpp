@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <array>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -125,6 +126,12 @@ private:
         std::uint32_t indexCount{};
         std::int32_t vertexOffset{};
         AndroidVulkanUiTexture texture{};
+        AndroidVulkanUiTexture lightmapTexture{};
+        AndroidVulkanUiTexture hemiTexture{};
+        std::uint32_t materialFlags{};
+        Fvector boundsCenter{};
+        float boundsRadius{};
+        Fmatrix transform{};
     };
 
     struct DynamicMesh
@@ -141,11 +148,42 @@ private:
         AndroidVulkanWorldMesh mesh{};
         std::uint32_t indexCount{};
         AndroidVulkanUiTexture texture{};
+        bool hud{};
         float worldViewProjection[16]{};
+    };
+
+    struct DetailModel
+    {
+        struct Vertex
+        {
+            Fvector position{};
+            float u{};
+            float v{};
+        };
+
+        std::string textureName;
+        float minimumScale{1.f};
+        float maximumScale{1.f};
+        std::vector<Vertex> vertices;
+        std::vector<std::uint16_t> indices;
+        AndroidVulkanUiTexture texture{};
+        AndroidVulkanWorldMesh mesh{};
+        std::uint32_t drawIndexCount{};
+    };
+
+    struct DetailSlot
+    {
+        float minimumY{};
+        float height{};
+        std::array<std::uint8_t, 4> modelIds{};
+        std::array<std::array<std::uint8_t, 4>, 4> palette{};
     };
 
     void UpdateDimensions(SDL_Window* window, u32& width, u32& height, float& halfWidth, float& halfHeight);
     void ClearDynamicMeshes();
+    void LoadLevelDetails();
+    void UpdateLevelDetails();
+    void ClearLevelDetails();
     void SubmitTouchControls();
 
     AndroidVulkanRenderer renderer;
@@ -158,6 +196,15 @@ private:
     std::vector<LevelDraw> levelDraws;
     std::unordered_map<IRenderVisual*, DynamicMesh> dynamicMeshes;
     std::vector<DynamicDraw> dynamicDraws;
+    std::vector<DetailModel> detailModels;
+    std::vector<DetailSlot> detailSlots;
+    std::uint32_t detailSlotsX{};
+    std::uint32_t detailSlotsZ{};
+    std::int32_t detailOffsetX{};
+    std::int32_t detailOffsetZ{};
+    std::int32_t detailCenterX{};
+    std::int32_t detailCenterZ{};
+    bool detailCenterValid{};
     bool initialized{};
     bool failed{};
 };
