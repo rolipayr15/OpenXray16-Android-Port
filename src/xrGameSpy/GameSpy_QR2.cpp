@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "GameSpy_QR2.h"
 #include "GameSpy_Keys.h"
+#include "GameSpy_MasterServer.h"
 
 namespace
 {
@@ -20,7 +21,7 @@ qr2_error_t xrGS_qr2_initA(qr2_t* qrec, const gsi_char* ip, int baseport, int is
             BasePort = END_PORT;
     }
 
-    qr2_error_t res = qr2_initA(qrec, ip, BasePort, GAMESPY_GAMENAME, GAMESPY_GAMEKEY, ispublic, natnegotiate,
+    qr2_error_t res = qr2_initA(qrec, ip, BasePort, GAMESPY_GAMENAME_SOC, GAMESPY_GAMEKEY_SOC, ispublic, natnegotiate,
         server_key_callback, player_key_callback, team_key_callback, key_list_callback, playerteam_count_callback,
         adderror_callback, userdata);
 
@@ -28,8 +29,34 @@ qr2_error_t xrGS_qr2_initA(qr2_t* qrec, const gsi_char* ip, int baseport, int is
 }
 }
 
-void CGameSpy_QR2::Think(void* qrec) { qr2_think(static_cast<qr2_t>(qrec)); }
-void CGameSpy_QR2::ShutDown(void* qrec) { qr2_shutdown(static_cast<qr2_t>(qrec)); }
+void CGameSpy_QR2::Think(void* qrec)
+{
+    qr2_think(static_cast<qr2_t>(qrec));
+    UpdateCustomMasterRegistration(false);
+}
+
+void CGameSpy_QR2::ShutDown(void* qrec)
+{
+    UpdateCustomMasterRegistration(true);
+    qr2_shutdown(static_cast<qr2_t>(qrec));
+    m_customMasterRegistration = false;
+    m_queryPort = 0;
+}
+
+void CGameSpy_QR2::UpdateCustomMasterRegistration(bool unregisterServer)
+{
+    if (!m_customMasterRegistration || m_queryPort == 0)
+        return;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (!unregisterServer && now < m_nextCustomMasterHeartbeat)
+        return;
+
+    if (!SendGameSpyMasterRegistration(m_queryPort, unregisterServer))
+        Msg("! Unable to %s SoC server at configured OpenXRay master", unregisterServer ? "unregister" : "register");
+    if (!unregisterServer)
+        m_nextCustomMasterHeartbeat = now + std::chrono::seconds(30);
+}
 void CGameSpy_QR2::RegisterAdditionalKeys()
 {
     //---- Global Keys ----
@@ -84,6 +111,12 @@ void CGameSpy_QR2::RegisterAdditionalKeys()
 
 bool CGameSpy_QR2::Init(int PortID, int Public, SInitConfig& ctx)
 {
+    int effectivePort = PortID;
+    if (effectivePort == -1)
+        effectivePort = GAMESPY_QR2_BASEPORT;
+    else
+        effectivePort = std::clamp(effectivePort, START_PORT, END_PORT);
+
     qr2_error_t err = xrGS_qr2_initA(nullptr,
                                      nullptr,
                                      PortID,
@@ -108,6 +141,11 @@ bool CGameSpy_QR2::Init(int PortID, int Public, SInitConfig& ctx)
     }
 
     RegisterAdditionalKeys();
+
+    m_queryPort = static_cast<unsigned short>(effectivePort);
+    m_customMasterRegistration = Public != 0 && IsGameSpyMasterServerConfigured();
+    m_nextCustomMasterHeartbeat = std::chrono::steady_clock::time_point{};
+    UpdateCustomMasterRegistration(false);
 
     // Set a function to be called when we receive a game specific message
     qr2_register_clientmessage_callback(NULL, ctx.OnClientMessage);
@@ -139,5 +177,5 @@ void CGameSpy_QR2::KeyBufferAdd(void* keybuffer, int keyid)
     qr2_keybuffer_add(static_cast<qr2_keybuffer_t>(keybuffer), keyid);
 }
 
-const char* CGameSpy_QR2::GetGameVersion() { return GAME_VERSION; }
+const char* CGameSpy_QR2::GetGameVersion() { return GAME_VERSION_SOC; }
 const char* CGameSpy_QR2::RegisteredKey(u32 KeyID) { return qr2_registered_key_list[KeyID]; }

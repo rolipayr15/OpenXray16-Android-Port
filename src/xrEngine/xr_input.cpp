@@ -80,6 +80,7 @@ struct AndroidTouchState
     std::array<SDL_FingerID, static_cast<size_t>(AndroidTouchAction::Count)> buttonFingers{};
     std::array<bool, SDL_NUM_SCANCODES> virtualKeys{};
     bool virtualFire{};
+    bool virtualAim{};
 
     AndroidTouchState()
     {
@@ -90,13 +91,19 @@ struct AndroidTouchState
 constexpr AndroidTouchButtonSnapshot TouchButtonLayout[] =
 {
     {0.89f, 0.72f, 0.078f, AndroidTouchAction::Fire, false},
+    {0.89f, 0.88f, 0.052f, AndroidTouchAction::Aim, false},
     {0.91f, 0.50f, 0.062f, AndroidTouchAction::Jump, false},
+    {0.30f, 0.82f, 0.055f, AndroidTouchAction::Sprint, false},
     {0.78f, 0.62f, 0.058f, AndroidTouchAction::Use, false},
     {0.76f, 0.79f, 0.058f, AndroidTouchAction::Crouch, false},
     {0.94f, 0.31f, 0.048f, AndroidTouchAction::Reload, false},
+    {0.65f, 0.80f, 0.044f, AndroidTouchAction::NextAmmo, false},
+    {0.65f, 0.69f, 0.044f, AndroidTouchAction::Drop, false},
     {0.84f, 0.30f, 0.048f, AndroidTouchAction::Inventory, false},
     {0.74f, 0.30f, 0.048f, AndroidTouchAction::Pda, false},
     {0.64f, 0.30f, 0.048f, AndroidTouchAction::Flashlight, false},
+    {0.54f, 0.30f, 0.044f, AndroidTouchAction::NightVision, false},
+    {0.54f, 0.40f, 0.044f, AndroidTouchAction::Detector, false},
     {0.42f, 0.12f, 0.036f, AndroidTouchAction::Slot1, false},
     {0.49f, 0.12f, 0.036f, AndroidTouchAction::Slot2, false},
     {0.56f, 0.12f, 0.036f, AndroidTouchAction::Slot3, false},
@@ -111,13 +118,18 @@ SDL_Scancode TouchActionScancode(AndroidTouchAction action)
 {
     switch (action)
     {
+    case AndroidTouchAction::Sprint: return SDL_SCANCODE_X;
     case AndroidTouchAction::Jump: return SDL_SCANCODE_SPACE;
     case AndroidTouchAction::Use: return SDL_SCANCODE_F;
     case AndroidTouchAction::Crouch: return SDL_SCANCODE_LCTRL;
     case AndroidTouchAction::Reload: return SDL_SCANCODE_R;
+    case AndroidTouchAction::NextAmmo: return SDL_SCANCODE_Y;
+    case AndroidTouchAction::Drop: return SDL_SCANCODE_G;
     case AndroidTouchAction::Inventory: return SDL_SCANCODE_I;
     case AndroidTouchAction::Pda: return SDL_SCANCODE_P;
     case AndroidTouchAction::Flashlight: return SDL_SCANCODE_L;
+    case AndroidTouchAction::NightVision: return SDL_SCANCODE_N;
+    case AndroidTouchAction::Detector: return SDL_SCANCODE_O;
     case AndroidTouchAction::Slot1: return SDL_SCANCODE_1;
     case AndroidTouchAction::Slot2: return SDL_SCANCODE_2;
     case AndroidTouchAction::Slot3: return SDL_SCANCODE_3;
@@ -152,6 +164,19 @@ void PushVirtualFire(bool pressed)
     event.type = pressed ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
     event.button.which = 0;
     event.button.button = SDL_BUTTON_LEFT;
+    event.button.state = pressed ? SDL_PRESSED : SDL_RELEASED;
+    SDL_PushEvent(&event);
+}
+
+void PushVirtualAim(bool pressed)
+{
+    if (AndroidTouch.virtualAim == pressed)
+        return;
+    AndroidTouch.virtualAim = pressed;
+    SDL_Event event{};
+    event.type = pressed ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
+    event.button.which = 0;
+    event.button.button = SDL_BUTTON_RIGHT;
     event.button.state = pressed ? SDL_PRESSED : SDL_RELEASED;
     SDL_PushEvent(&event);
 }
@@ -207,6 +232,8 @@ void SetTouchButton(size_t index, bool pressed)
     const AndroidTouchAction action = TouchButtonLayout[index].action;
     if (action == AndroidTouchAction::Fire)
         PushVirtualFire(pressed);
+    else if (action == AndroidTouchAction::Aim)
+        PushVirtualAim(pressed);
     else
         PushVirtualKey(TouchActionScancode(action), pressed);
 }
@@ -215,8 +242,9 @@ void ReleaseAllTouchControls()
 {
     ReleaseMovement();
     PushVirtualFire(false);
+    PushVirtualAim(false);
     for (const auto& button : TouchButtonLayout)
-        if (button.action != AndroidTouchAction::Fire)
+        if (button.action != AndroidTouchAction::Fire && button.action != AndroidTouchAction::Aim)
             PushVirtualKey(TouchActionScancode(button.action), false);
     AndroidTouch.stickFinger = NoTouchFinger;
     AndroidTouch.lookFinger = NoTouchFinger;

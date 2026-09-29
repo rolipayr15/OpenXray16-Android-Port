@@ -16,6 +16,7 @@
 #include "Include/xrAPI/xrAPI.h"
 #include "xrEngine/x_ray.h"
 #include "xrGame/xrGame.h"
+#include "xrGameSpy/GameSpy_MasterServer.h"
 #include "Opcode.h"
 #include "md5.h"
 #include <imgui.h>
@@ -515,12 +516,28 @@ int main(int argc, char** argv)
     const char* appFilesPath = FindArgument(argc, argv, "--app-files-path");
     const char* profileId = FindArgument(argc, argv, "--profile-id");
     const char* renderScale = FindArgument(argc, argv, "--render-scale");
+    const char* viewDistance = FindArgument(argc, argv, "--view-distance");
+    const char* masterHost = FindArgument(argc, argv, "--master-host");
+    const char* masterPortText = FindArgument(argc, argv, "--master-port");
     const char* engineArguments = FindArgument(argc, argv, "--engine-args");
+    const float viewDistancePercent = std::clamp(
+        viewDistance && viewDistance[0] ? std::strtof(viewDistance, nullptr) : 100.f,
+        40.f, 100.f);
+    AndroidSetViewDistanceScale(viewDistancePercent / 100.f);
+    const long parsedMasterPort = masterPortText && masterPortText[0] ? std::strtol(masterPortText, nullptr, 10) : 28910;
+    const unsigned short masterPort = static_cast<unsigned short>(
+        std::clamp(parsedMasterPort, 1L, 65535L));
+    ConfigureGameSpyMasterServer(masterHost, masterPort);
     OutputDebugString("Starting OpenXRay Android SDL host");
     __android_log_print(ANDROID_LOG_INFO, LogTag, "Selected game-data tree: %s", gameDataUri);
     __android_log_print(ANDROID_LOG_INFO, LogTag, "Private engine files: %s", appFilesPath);
-    __android_log_print(ANDROID_LOG_INFO, LogTag, "Launch profile: %s; render scale: %s%%",
-        profileId, renderScale);
+    __android_log_print(ANDROID_LOG_INFO, LogTag,
+        "Launch profile: %s; render scale: %s%%; view distance: %.0f%%",
+        profileId, renderScale, viewDistancePercent);
+    if (IsGameSpyMasterServerConfigured())
+        __android_log_print(ANDROID_LOG_INFO, LogTag, "Custom SoC master: %s:%hu", masterHost, masterPort);
+    else
+        __android_log_write(ANDROID_LOG_INFO, LogTag, "Custom SoC master disabled; using compatibility backend");
 
     std::vector<AndroidSafEntry> gameDataRootEntries;
     if (!AndroidSafListDirectory("", gameDataRootEntries))

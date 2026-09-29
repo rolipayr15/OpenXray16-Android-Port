@@ -8,6 +8,7 @@
 #include "Layers/xrRender/ModelPool.h"
 #include "Layers/xrRender/SkeletonXVertRender.h"
 #include "Layers/xrRender/light.h"
+#include "Layers/xrRender/TextureDescrManager.h"
 
 #include <algorithm>
 
@@ -111,6 +112,14 @@ struct AndroidRenderModelPool
     CModelPool models;
 };
 
+struct AndroidTextureDetailManager
+{
+    xray::render::render_gl::CTextureDescrMngr descriptions;
+
+    AndroidTextureDetailManager() { descriptions.Load(); }
+    ~AndroidTextureDetailManager() { descriptions.UnLoad(); }
+};
+
 AndroidRenderModelPool* CreateAndroidRenderModelPool()
 {
     return xr_new<AndroidRenderModelPool>();
@@ -175,7 +184,12 @@ bool AndroidBuildModelGeometry(IRenderVisual* visual, std::vector<AndroidModelGe
     if (!visual)
         return false;
     if (IKinematics* kinematics = visual->dcast_PKinematics())
-        kinematics->CalculateBones();
+        // AndroidVulkanRenderDevice performs CPU skinning for every visible model.  The
+        // normal renderer can reuse/interpolate bone state between its own render
+        // passes, but doing that here makes the uploaded vertex stream advance only at
+        // UCalc_Interval (100 ms).  Force the exact pose before extracting vertices so
+        // animation cadence follows the game frame rate.
+        kinematics->CalculateBones(TRUE);
     return AppendModelGeometry(static_cast<dxRender_Visual*>(visual), geometry);
 #else
     (void)visual;
@@ -221,4 +235,29 @@ IRender_Glow* AndroidRenderGlowCreate()
 void AndroidRenderGlowDestroyed(IRender_Glow* object)
 {
     EraseRenderObject(androidGlows, object);
+}
+
+AndroidTextureDetailManager* CreateAndroidTextureDetailManager()
+{
+    return xr_new<AndroidTextureDetailManager>();
+}
+
+void DestroyAndroidTextureDetailManager(AndroidTextureDetailManager*& manager)
+{
+    xr_delete(manager);
+}
+
+bool AndroidFindTextureDetail(AndroidTextureDetailManager* manager, const char* baseTexture,
+    std::string& detailTexture, float& detailScale)
+{
+    detailTexture.clear();
+    detailScale = 1.f;
+    if (!manager || !baseTexture || !baseTexture[0])
+        return false;
+
+    LPCSTR name = nullptr;
+    if (!manager->descriptions.GetDetailTextureInfo(baseTexture, name, detailScale) || !name || !name[0])
+        return false;
+    detailTexture = name;
+    return true;
 }

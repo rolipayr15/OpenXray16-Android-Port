@@ -84,6 +84,12 @@ void CGameTask::Load(const TASK_ID& id)
         return;
     }
 
+    // The task XML is shared by every CGameTask.  Load() changes its local root
+    // while walking objectives, so a later save load used to search from the
+    // previous task's last <objective> node and report a perfectly valid task
+    // as missing.  Always perform the top-level lookup from the document root
+    // and leave it at the document root for the next task load.
+    gameTaskXml.SetLocalRoot(gameTaskXml.GetRoot());
     const XML_NODE task_node = gameTaskXml.NavigateToNodeWithAttribute("game_task", "id", id.c_str());
 
     THROW3(task_node, "game task id = ", id.c_str());

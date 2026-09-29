@@ -1,6 +1,8 @@
 #pragma once
 #include "xrGameSpy/xrGameSpy.h"
 
+#include <chrono>
+
 class xrGameSpyServer;
 
 class XRGAMESPY_API CGameSpy_QR2
@@ -22,7 +24,11 @@ public:
     };
 
 private:
-    //	string16	m_SecretKey;
+    unsigned short m_queryPort = 0;
+    bool m_customMasterRegistration = false;
+    std::chrono::steady_clock::time_point m_nextCustomMasterHeartbeat{};
+
+    void UpdateCustomMasterRegistration(bool unregisterServer);
 
 public:
     bool Init(int PortID, int Public, SInitConfig& ctx);

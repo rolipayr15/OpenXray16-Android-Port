@@ -8,6 +8,7 @@ target_sources_grouped(
     stdafx.h
     xrGameSpy.cpp
     xrGameSpy.h
+    xrGameSpy_API.h
     xrGameSpy_MainDefs.h
 )
 
@@ -34,6 +35,8 @@ target_sources_grouped(
     GameSpy_HTTP.cpp
     GameSpy_HTTP.h
     GameSpy_Keys.h
+    GameSpy_MasterServer.cpp
+    GameSpy_MasterServer.h
     GameSpy_QR2.cpp
     GameSpy_QR2.h
 )

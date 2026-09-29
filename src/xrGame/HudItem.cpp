@@ -290,7 +290,10 @@ u32 CHudItem::PlayHUDMotion(const shared_str& M, const shared_str& M2, BOOL bMix
 {
     u32 time = 0;
 
-    if (isHUDAnimationExist(M.c_str()))
+    // The first name is the OpenXRay-style alias and is optional for vanilla
+    // ShoC data. Probe it silently; only report when the required fallback is
+    // missing as well.
+    if (isHUDAnimationExist(M.c_str(), true))
         time = PlayHUDMotion(M, bMixIn, W, state);
     else if (isHUDAnimationExist(M2.c_str()))
         time = PlayHUDMotion(M2, bMixIn, W, state);
@@ -362,12 +365,12 @@ bool CHudItem::TryPlayAnimIdle()
             }
             if (pActor->AnyMove())
             {
-                if (!st.bCrouch && isHUDAnimationExist("anm_idle_moving"))
+                if (!st.bCrouch && isHUDAnimationExist("anm_idle_moving", true))
                 {
                     PlayAnimIdleMoving();
                     return true;
                 }
-                if (st.bCrouch && isHUDAnimationExist("anm_idle_moving_crouch"))
+                if (st.bCrouch && isHUDAnimationExist("anm_idle_moving_crouch", true))
                 {
                     PlayAnimIdleMovingCrouch();
                     return true;
@@ -407,7 +410,7 @@ bool CHudItem::isHUDAnimationExist(pcstr anim_name, bool silent) const
 
 pcstr CHudItem::WhichHUDAnimationExist(pcstr anim_name, pcstr anim_name2, bool silent) const
 {
-    if (isHUDAnimationExist(anim_name, silent))
+    if (isHUDAnimationExist(anim_name, true))
         return anim_name;
     if (isHUDAnimationExist(anim_name2, silent))
         return anim_name2;

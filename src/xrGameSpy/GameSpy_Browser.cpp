@@ -2,6 +2,7 @@
 #include "GameSpy_Browser.h"
 #include "xrServerEntities/gametype_chooser.h"
 #include "GameSpy_Keys.h"
+#include "GameSpy_MasterServer.h"
 #include "Common/object_broker.h"
 
 #define GAMETYPE_NAME_KEY 100
@@ -10,6 +11,24 @@
 
 namespace
 {
+struct CustomMasterQueryContext
+{
+    ServerBrowser browser;
+    bool queryFailed = false;
+    unsigned int serverCount = 0;
+};
+
+void AddCustomMasterEndpoint(const char* address, unsigned short queryPort, void* opaque)
+{
+    auto* context = static_cast<CustomMasterQueryContext*>(opaque);
+    const SBError error = ServerBrowserAuxUpdateIPA(
+        context->browser, address, queryPort, SBFalse, SBTrue, SBTrue);
+    if (error == sbe_noerror || error == sbe_duplicateupdateerror)
+        ++context->serverCount;
+    else
+        context->queryFailed = true;
+}
+
 void __cdecl SBCallback(ServerBrowser sb, SBCallbackReason reason, SBServer server, void* instance)
 {
     CGameSpy_Browser* pGSBrowser = (CGameSpy_Browser*)instance;
@@ -137,6 +156,29 @@ void CGameSpy_Browser::Clear()
 void CGameSpy_Browser::RefreshListInternet(const char* FilterStr)
 {
     m_refresh_lock.Enter();
+    if (!m_pGSBrowser)
+    {
+        m_bShowCMSErr = true;
+        m_bTryingToConnectToMasterServer = false;
+        m_refresh_lock.Leave();
+        return;
+    }
+
+    if (IsGameSpyMasterServerConfigured())
+    {
+        CustomMasterQueryContext context{m_pGSBrowser};
+        const bool masterResponded = QueryGameSpyMasterServer(AddCustomMasterEndpoint, &context);
+        m_bShowCMSErr = !masterResponded || context.queryFailed;
+        m_bTryingToConnectToMasterServer = false;
+        if (masterResponded)
+        {
+            Msg("- OpenXRay SoC master returned %u server endpoint(s)", context.serverCount);
+            UpdateServerList();
+        }
+        m_refresh_lock.Leave();
+        return;
+    }
+
     static const u8 targetFields[] = {HOSTNAME_KEY, HOSTPORT_KEY, NUMPLAYERS_KEY, MAXPLAYERS_KEY, MAPNAME_KEY,
         GAMETYPE_KEY, GAMEVER_KEY, PASSWORD_KEY, G_USER_PASSWORD_KEY, DEDICATED_KEY, GAMETYPE_NAME_KEY};
     const int fieldCount = sizeof(targetFields) / sizeof(targetFields[0]);
@@ -361,6 +403,9 @@ void CGameSpy_Browser::OnUpdateFailed(void* server)
 
 GSUpdateStatus CGameSpy_Browser::Update()
 {
+    if (!m_pGSBrowser)
+        return GSUpdateStatus::MasterUnreachable;
+
     ServerBrowserThink(m_pGSBrowser);
     if (m_bTryingToConnectToMasterServer)
         return GSUpdateStatus::ConnectingToMaster;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "xrGameSpy/xrGameSpy_API.h"
+
 #include <GameSpy/common/gsCommon.h>
 #include <GameSpy/common/gsAvailable.h>
 #include <GameSpy/ghttp/ghttp.h>
@@ -12,20 +14,11 @@
 #include <GameSpy/sake/sake.h>
 #include <GameSpy/sc/sc.h>
 
-#ifdef XRAY_STATIC_BUILD
-#   define XRGAMESPY_API
-#else
-#   ifdef XRGAMESPY_EXPORTS
-#      define XRGAMESPY_API XR_EXPORT
-#   else
-#      define XRGAMESPY_API XR_IMPORT
-#   endif
-#endif
-
 #include "xrGameSpy/xrGameSpy_MainDefs.h"
 #include "xrGameSpy/GameSpy_Available.h"
 #include "xrGameSpy/GameSpy_Browser.h"
 #include "xrGameSpy/GameSpy_BrowsersWrapper.h"
+#include "xrGameSpy/GameSpy_MasterServer.h"
 #include "xrGameSpy/GameSpy_QR2.h"
 #include "xrGameSpy/GameSpy_GCD_Client.h"
 #include "xrGameSpy/GameSpy_GCD_Server.h"

@@ -12,6 +12,7 @@ class IRender_Glow;
 class IRenderVisual;
 
 struct AndroidRenderModelPool;
+struct AndroidTextureDetailManager;
 
 struct AndroidModelVertex
 {
@@ -46,3 +47,7 @@ IRender_Light* AndroidRenderLightCreate();
 void AndroidRenderLightDestroyed(IRender_Light* light);
 IRender_Glow* AndroidRenderGlowCreate();
 void AndroidRenderGlowDestroyed(IRender_Glow* glow);
+AndroidTextureDetailManager* CreateAndroidTextureDetailManager();
+void DestroyAndroidTextureDetailManager(AndroidTextureDetailManager*& manager);
+bool AndroidFindTextureDetail(AndroidTextureDetailManager* manager, const char* baseTexture,
+    std::string& detailTexture, float& detailScale);

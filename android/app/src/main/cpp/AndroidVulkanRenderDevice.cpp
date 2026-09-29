@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -39,6 +40,7 @@ extern ENGINE_API float psHUD_FOV;
 namespace
 {
 constexpr const char* LogTag = "OpenXRay";
+float androidViewDistanceScale = 1.f;
 
 struct AndroidLevelVertexBuffer
 {
@@ -63,6 +65,8 @@ struct AndroidLevelMaterial
     std::string baseTexture;
     std::string lightmapTexture;
     std::string hemiTexture;
+    std::string detailTexture;
+    float detailScale{1.f};
 };
 
 #pragma pack(push, 1)
@@ -123,6 +127,62 @@ float InterpolateDetailPalette(const std::array<std::uint8_t, 4>& palette, float
     const float bottom = static_cast<float>(palette[2]) * (1.f - x) +
         static_cast<float>(palette[3]) * x;
     return top * (1.f - z) + bottom * z;
+}
+
+float MaximumTransformScale(const Fmatrix& transform)
+{
+    const float x = _sqrt(transform._11 * transform._11 + transform._12 * transform._12 +
+        transform._13 * transform._13);
+    const float y = _sqrt(transform._21 * transform._21 + transform._22 * transform._22 +
+        transform._23 * transform._23);
+    const float z = _sqrt(transform._31 * transform._31 + transform._32 * transform._32 +
+        transform._33 * transform._33);
+    return std::max({x, y, z});
+}
+
+bool PassesDistanceLimit(const Fvector& center, float radius, float maximumDistance)
+{
+    if (maximumDistance <= 0.f)
+        return true;
+    const float expandedDistance = maximumDistance + std::max(radius, 0.f);
+    return Device.vCameraPosition.distance_to_sqr(center) <= _sqr(expandedDistance);
+}
+
+std::string LowercaseTextureName(const std::string& textureName)
+{
+    std::string lowered = textureName;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char character)
+    {
+        return static_cast<char>(std::tolower(character));
+    });
+    return lowered;
+}
+
+bool TextureUsesAlphaTest(const std::string& textureName)
+{
+    const std::string lowered = LowercaseTextureName(textureName);
+    if (lowered.empty())
+        return false;
+
+    // Do not infer opacity from the DDS alpha channel: Shadow of Chernobyl
+    // also stores gloss and other material masks there. These families are
+    // authored as cutout geometry and really do use alpha for empty texels.
+    static constexpr std::array<const char*, 12> cutoutTokens = {
+        "barbwire", "barbed", "\\fence", "_fence", "\\resh", "_resh",
+        "setka", "vetka", "listva", "foliage", "forestwall", "_fur"};
+    return std::any_of(cutoutTokens.begin(), cutoutTokens.end(), [&](const char* token)
+    {
+        return lowered.find(token) != std::string::npos;
+    });
+}
+
+float ConservativeVisibilityRadius(float radius)
+{
+    // OGF bounds are authored for the legacy render graph and can be very
+    // tight for transformed trees/large compound level visuals.  A modest
+    // guard band keeps objects stable at frustum edges while retaining the
+    // bulk of the static frustum/distance rejection.
+    return radius > EPS_S ? radius * 1.5f + 0.5f : radius;
 }
 
 std::size_t DeclarationTypeSize(std::uint8_t type)
@@ -474,6 +534,23 @@ void AppendTouchGlyph(std::vector<AndroidVulkanUiVertex>& vertices, AndroidTouch
             line(.18f, -.05f, -.30f, -.05f); break;
         case 'L':
             line(-.28f, -.45f, -.28f, .45f); line(-.28f, .45f, .32f, .45f); break;
+        case 'X':
+            line(-.32f, -.45f, .32f, .45f); line(.32f, -.45f, -.32f, .45f); break;
+        case 'Y':
+            line(-.34f, -.45f, 0.f, -.04f); line(.34f, -.45f, 0.f, -.04f);
+            line(0.f, -.04f, 0.f, .45f); break;
+        case 'G':
+            line(.30f, -.30f, .08f, -.45f); line(.08f, -.45f, -.28f, -.32f);
+            line(-.28f, -.32f, -.34f, .30f); line(-.34f, .30f, .08f, .45f);
+            line(.08f, .45f, .32f, .24f); line(.32f, .24f, .32f, .02f);
+            line(.32f, .02f, .04f, .02f); break;
+        case 'N':
+            line(-.30f, .45f, -.30f, -.45f); line(-.30f, -.45f, .30f, .45f);
+            line(.30f, .45f, .30f, -.45f); break;
+        case 'O':
+            line(-.26f, -.45f, .26f, -.45f); line(.26f, -.45f, .36f, .32f);
+            line(.36f, .32f, -.26f, .45f); line(-.26f, .45f, -.36f, -.32f);
+            line(-.36f, -.32f, -.26f, -.45f); break;
         default: break;
         }
     };
@@ -499,9 +576,16 @@ void AppendTouchGlyph(std::vector<AndroidVulkanUiVertex>& vertices, AndroidTouch
     case AndroidTouchAction::Fire:
         line(-.45f, 0.f, .45f, 0.f); line(0.f, -.45f, 0.f, .45f);
         break;
+    case AndroidTouchAction::Aim:
+        line(-.45f, 0.f, -.16f, 0.f); line(.16f, 0.f, .45f, 0.f);
+        line(0.f, -.45f, 0.f, -.16f); line(0.f, .16f, 0.f, .45f);
+        break;
     case AndroidTouchAction::Jump:
         line(0.f, .45f, 0.f, -.45f); line(0.f, -.45f, -.28f, -.12f);
         line(0.f, -.45f, .28f, -.12f);
+        break;
+    case AndroidTouchAction::Sprint:
+        letter('X');
         break;
     case AndroidTouchAction::Use:
         letter('F');
@@ -513,6 +597,12 @@ void AppendTouchGlyph(std::vector<AndroidVulkanUiVertex>& vertices, AndroidTouch
     case AndroidTouchAction::Reload:
         letter('R');
         break;
+    case AndroidTouchAction::NextAmmo:
+        letter('Y');
+        break;
+    case AndroidTouchAction::Drop:
+        letter('G');
+        break;
     case AndroidTouchAction::Inventory:
         letter('I');
         break;
@@ -521,6 +611,12 @@ void AppendTouchGlyph(std::vector<AndroidVulkanUiVertex>& vertices, AndroidTouch
         break;
     case AndroidTouchAction::Flashlight:
         letter('L');
+        break;
+    case AndroidTouchAction::NightVision:
+        letter('N');
+        break;
+    case AndroidTouchAction::Detector:
+        letter('O');
         break;
     case AndroidTouchAction::Slot1: digit(1); break;
     case AndroidTouchAction::Slot2: digit(2); break;
@@ -578,6 +674,11 @@ private:
 };
 }
 
+void AndroidSetViewDistanceScale(float scale)
+{
+    androidViewDistanceScale = std::clamp(scale, .4f, 1.f);
+}
+
 AndroidVulkanRenderDevice::AndroidVulkanRenderDevice(const char* path) : appFilesPath(path ? path : "")
 {
     modelPool = CreateAndroidRenderModelPool();
@@ -590,6 +691,7 @@ AndroidVulkanRenderDevice::AndroidVulkanRenderDevice(const char* path) : appFile
 AndroidVulkanRenderDevice::~AndroidVulkanRenderDevice()
 {
     Destroy();
+    DestroyAndroidTextureDetailManager(textureDetails);
     DestroyAndroidRenderModelPool(modelPool);
 }
 
@@ -726,8 +828,12 @@ void AndroidVulkanRenderDevice::UpdateLevelDetails()
     constexpr std::int32_t slotRadius = 12;
     const std::int32_t centerX = iFloor(Device.vCameraPosition.x / slotSize + .5f) + detailOffsetX;
     const std::int32_t centerZ = iFloor(Device.vCameraPosition.z / slotSize + .5f) + detailOffsetZ;
-    if (detailCenterValid && std::abs(centerX - detailCenterX) < 3 &&
-        std::abs(centerZ - detailCenterZ) < 3)
+    // Keep a generous 24 m detail ring and rebuild it only after the camera
+    // moves 10 m. Rebuilding performs collision rays, CPU mesh generation and
+    // GPU resource replacement, so doing it every 4-6 m caused visible frame
+    // spikes while simply walking through a level.
+    if (detailCenterValid && std::abs(centerX - detailCenterX) < 5 &&
+        std::abs(centerZ - detailCenterZ) < 5)
     {
         return;
     }
@@ -735,13 +841,16 @@ void AndroidVulkanRenderDevice::UpdateLevelDetails()
     detailCenterZ = centerZ;
     detailCenterValid = true;
 
+    std::vector<AndroidVulkanWorldMesh> obsoleteMeshes;
+    obsoleteMeshes.reserve(detailModels.size());
     for (DetailModel& model : detailModels)
     {
         if (model.mesh != 0)
-            renderer.DestroyWorldMesh(model.mesh);
+            obsoleteMeshes.push_back(model.mesh);
         model.mesh = 0;
         model.drawIndexCount = 0;
     }
+    renderer.DestroyWorldMeshes(obsoleteMeshes.data(), obsoleteMeshes.size());
 
     std::vector<std::vector<AndroidVulkanWorldVertex>> generatedVertices(detailModels.size());
     std::vector<std::vector<std::uint16_t>> generatedIndices(detailModels.size());
@@ -861,11 +970,14 @@ void AndroidVulkanRenderDevice::UpdateLevelDetails()
 
 void AndroidVulkanRenderDevice::ClearLevelDetails()
 {
+    std::vector<AndroidVulkanWorldMesh> obsoleteMeshes;
+    obsoleteMeshes.reserve(detailModels.size());
     for (DetailModel& model : detailModels)
     {
         if (model.mesh != 0)
-            renderer.DestroyWorldMesh(model.mesh);
+            obsoleteMeshes.push_back(model.mesh);
     }
+    renderer.DestroyWorldMeshes(obsoleteMeshes.data(), obsoleteMeshes.size());
     detailModels.clear();
     detailSlots.clear();
     detailSlotsX = 0;
@@ -945,6 +1057,8 @@ void AndroidVulkanRenderDevice::level_Load(IReader* level)
                                   std::strlen(hemi));
                 }
             }
+            AndroidFindTextureDetail(textureDetails, materials[shaderIndex].baseTexture.c_str(),
+                materials[shaderIndex].detailTexture, materials[shaderIndex].detailScale);
         }
         shaders->close();
     }
@@ -975,6 +1089,10 @@ void AndroidVulkanRenderDevice::level_Load(IReader* level)
             {
                 LevelDraw draw{};
                 draw.transform.identity();
+                // Mark immutable level geometry for the static pipeline. Some
+                // compiled visuals reverse their effective winding after
+                // transforms, so that pipeline is deliberately two-sided.
+                draw.materialFlags = 32u;
                 if (hasHeader)
                 {
                     draw.boundsCenter.set(header.bs.c);
@@ -1007,15 +1125,19 @@ void AndroidVulkanRenderDevice::level_Load(IReader* level)
                     visual->find_chunk(OGF_TREEDEF2) != 0)
                 {
                     visual->r(&draw.transform, sizeof(draw.transform));
-                    draw.materialFlags |= 8u;
+                    draw.materialFlags |= 8u | 16u;
+                    const Fvector localCenter = draw.boundsCenter;
+                    draw.transform.transform_tiny(draw.boundsCenter, localCenter);
+                    draw.boundsRadius *= MaximumTransformScale(draw.transform);
                 }
                 if (hasHeader && header.shader_id < materials.size())
                 {
                     const AndroidLevelMaterial& material = materials[header.shader_id];
                     if (material.shaderName.find("aref") != std::string::npos ||
-                        material.shaderName.find("alpha") != std::string::npos)
+                        material.shaderName.find("alpha") != std::string::npos ||
+                        TextureUsesAlphaTest(material.baseTexture))
                     {
-                        draw.materialFlags |= 8u;
+                        draw.materialFlags |= 8u | 16u;
                     }
                     if (!material.baseTexture.empty())
                     {
@@ -1044,6 +1166,17 @@ void AndroidVulkanRenderDevice::level_Load(IReader* level)
                             draw.materialFlags |= 2u;
                         }
                     }
+                    if (!material.detailTexture.empty())
+                    {
+                        std::uint32_t textureWidth = 0;
+                        std::uint32_t textureHeight = 0;
+                        if (AndroidLoadVulkanTexture(*this, material.detailTexture.c_str(),
+                                draw.detailTexture, textureWidth, textureHeight))
+                        {
+                            draw.detailScale = material.detailScale;
+                            draw.materialFlags |= 64u;
+                        }
+                    }
                 }
                 levelDraws.push_back(draw);
             }
@@ -1065,6 +1198,30 @@ void AndroidVulkanRenderDevice::level_Load(IReader* level)
         return;
     }
 
+    // The level file is organized by visual hierarchy rather than render
+    // state. Group immutable static draws by pipeline and material once at
+    // load time. Alpha-tested foliage is depth-writing (not blended), so this
+    // reordering is safe and substantially reduces descriptor/pipeline churn
+    // on tile-based mobile GPUs.
+    std::stable_sort(levelDraws.begin(), levelDraws.end(), [](const LevelDraw& left, const LevelDraw& right)
+    {
+        if (left.materialFlags != right.materialFlags)
+            return left.materialFlags < right.materialFlags;
+        if (left.texture != right.texture)
+            return left.texture < right.texture;
+        if (left.lightmapTexture != right.lightmapTexture)
+            return left.lightmapTexture < right.lightmapTexture;
+        if (left.hemiTexture != right.hemiTexture)
+            return left.hemiTexture < right.hemiTexture;
+        if (left.detailTexture != right.detailTexture)
+            return left.detailTexture < right.detailTexture;
+        if (left.detailScale != right.detailScale)
+            return left.detailScale < right.detailScale;
+        if (left.vertexOffset != right.vertexOffset)
+            return left.vertexOffset < right.vertexOffset;
+        return left.firstIndex < right.firstIndex;
+    });
+
     levelMesh = renderer.CreateWorldMesh(vertices.data(), vertices.size(), indices.data(), indices.size());
     if (levelMesh == 0)
     {
@@ -1074,9 +1231,11 @@ void AndroidVulkanRenderDevice::level_Load(IReader* level)
         return;
     }
 
+    const std::size_t detailedDraws = std::count_if(levelDraws.begin(), levelDraws.end(),
+        [](const LevelDraw& draw) { return (draw.materialFlags & 64u) != 0u; });
     __android_log_print(ANDROID_LOG_INFO, LogTag,
-        "Android Vulkan: uploaded level geometry: %zu vertices, %zu indices, %zu draws",
-        vertices.size(), indices.size(), levelDraws.size());
+        "Android Vulkan: uploaded level geometry: %zu vertices, %zu indices, %zu draws (%zu detailed)",
+        vertices.size(), indices.size(), levelDraws.size(), detailedDraws);
     LoadLevelDetails();
     AndroidTouchControlsSetGameplayActive(true);
 }
@@ -1105,10 +1264,12 @@ xrImTextureData AndroidVulkanRenderDevice::GetImGuiTextureId(pcstr) { return {};
 void AndroidVulkanRenderDevice::add_Visual(
     u32, IRenderable* root, IRenderVisual* visual, Fmatrix& transform)
 {
-    if (root)
-        AndroidRenderObjectUpdate(root->renderable_ROS(), root);
     if (!visual || !initialized)
         return;
+
+    const bool hud = root && root->renderable_HUD();
+    if (root)
+        AndroidRenderObjectUpdate(root->renderable_ROS(), root);
 
     std::vector<AndroidModelGeometry> geometry;
     if (!AndroidBuildModelGeometry(visual, geometry))
@@ -1146,6 +1307,8 @@ void AndroidVulkanRenderDevice::add_Visual(
                 std::uint32_t textureHeight = 0;
                 AndroidLoadVulkanTexture(*this, part.texture.c_str(), cached.texture,
                     textureWidth, textureHeight);
+                if (TextureUsesAlphaTest(part.texture))
+                    cached.materialFlags |= 8u | 16u;
             }
             __android_log_print(ANDROID_LOG_INFO, LogTag,
                 "Android Vulkan: uploaded dynamic model part: %u vertices, %u indices, texture=%s",
@@ -1170,7 +1333,8 @@ void AndroidVulkanRenderDevice::add_Visual(
         draw.mesh = cached.mesh;
         draw.indexCount = cached.indexCount;
         draw.texture = cached.texture;
-        draw.hud = root && root->renderable_HUD();
+        draw.materialFlags = cached.materialFlags;
+        draw.hud = hud;
         Fmatrix fullTransform;
         if (draw.hud)
         {
@@ -1272,6 +1436,9 @@ void AndroidVulkanRenderDevice::Calculate()
     if (!g_pGamePersistent)
         return;
 
+    maximumWorldDistance = g_pGamePersistent->Environment().CurrentEnv.far_plane *
+        androidViewDistanceScale;
+
     UpdateLevelDetails();
 
     CFrustum view;
@@ -1301,16 +1468,20 @@ void AndroidVulkanRenderDevice::Render()
     {
         for (const auto& draw : levelDraws)
         {
+            const float visibilityRadius = ConservativeVisibilityRadius(draw.boundsRadius);
             if (draw.boundsRadius > EPS_S &&
-                !view.testSphere_dirty(draw.boundsCenter, draw.boundsRadius))
+                !view.testSphere_dirty(draw.boundsCenter, visibilityRadius))
             {
                 continue;
             }
+            if (!PassesDistanceLimit(draw.boundsCenter, visibilityRadius, maximumWorldDistance))
+                continue;
             Fmatrix worldViewProjection;
             worldViewProjection.mul(Device.mFullTransform, draw.transform);
             renderer.SubmitWorldMesh(levelMesh, draw.firstIndex, draw.indexCount,
                 draw.vertexOffset, &worldViewProjection._11, draw.texture,
-                draw.lightmapTexture, draw.hemiTexture, draw.materialFlags);
+                draw.lightmapTexture, draw.hemiTexture, draw.detailTexture,
+                draw.detailScale, draw.materialFlags);
             ++visibleLevelDraws;
         }
     }
@@ -1318,11 +1489,12 @@ void AndroidVulkanRenderDevice::Render()
     {
         if (model.mesh != 0 && model.drawIndexCount != 0)
             renderer.SubmitWorldMesh(model.mesh, 0, model.drawIndexCount, 0,
-                &Device.mFullTransform._11, model.texture, 0, 0, 8u);
+                &Device.mFullTransform._11, model.texture, 0, 0, 0, 1.f, 8u | 16u);
     }
     for (const DynamicDraw& draw : dynamicDraws)
         renderer.SubmitWorldMesh(draw.mesh, 0, draw.indexCount, 0,
-            draw.worldViewProjection, draw.texture, 0, 0, draw.hud ? 4u : 0u);
+            draw.worldViewProjection, draw.texture, 0, 0, 0, 1.f,
+            draw.materialFlags | (draw.hud ? 4u : 0u));
 
     if (frameIndex != 0 && frameIndex % 300 == 0)
     {
@@ -1384,7 +1556,10 @@ void AndroidVulkanRenderDevice::setGamma(float) {}
 void AndroidVulkanRenderDevice::setBrightness(float) {}
 void AndroidVulkanRenderDevice::setContrast(float) {}
 void AndroidVulkanRenderDevice::updateGamma() {}
-void AndroidVulkanRenderDevice::OnDeviceDestroy(bool) {}
+void AndroidVulkanRenderDevice::OnDeviceDestroy(bool)
+{
+    DestroyAndroidTextureDetailManager(textureDetails);
+}
 
 void AndroidVulkanRenderDevice::Destroy()
 {
@@ -1484,7 +1659,11 @@ void AndroidVulkanRenderDevice::Reset(
 
 void AndroidVulkanRenderDevice::ObtainRequiredWindowFlags(u32& windowFlags) { windowFlags |= SDL_WINDOW_VULKAN; }
 void AndroidVulkanRenderDevice::SetupStates() {}
-void AndroidVulkanRenderDevice::OnDeviceCreate(pcstr) {}
+void AndroidVulkanRenderDevice::OnDeviceCreate(pcstr)
+{
+    DestroyAndroidTextureDetailManager(textureDetails);
+    textureDetails = CreateAndroidTextureDetailManager();
+}
 void AndroidVulkanRenderDevice::overdrawBegin() {}
 void AndroidVulkanRenderDevice::overdrawEnd() {}
 void AndroidVulkanRenderDevice::DeferredLoad(bool) {}

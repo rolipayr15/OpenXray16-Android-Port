@@ -28,6 +28,9 @@ public final class OpenXRayActivity extends SDLActivity {
     public static final String EXTRA_PROFILE_NAME = "org.openxray.android.PROFILE_NAME";
     public static final String EXTRA_ENGINE_ARGUMENTS = "org.openxray.android.ENGINE_ARGUMENTS";
     public static final String EXTRA_RENDER_SCALE = "org.openxray.android.RENDER_SCALE";
+    public static final String EXTRA_VIEW_DISTANCE = "org.openxray.android.VIEW_DISTANCE";
+    public static final String EXTRA_MASTER_SERVER_HOST = "org.openxray.android.MASTER_SERVER_HOST";
+    public static final String EXTRA_MASTER_SERVER_PORT = "org.openxray.android.MASTER_SERVER_PORT";
 
     private String gameDataUri = "";
     private String profileId = "default";
@@ -35,6 +38,9 @@ public final class OpenXRayActivity extends SDLActivity {
     private String engineArguments = "";
     private String appFilesPath = "";
     private int renderScale = 100;
+    private int viewDistance = 100;
+    private String masterServerHost = "";
+    private int masterServerPort = 28910;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -52,6 +58,15 @@ public final class OpenXRayActivity extends SDLActivity {
         if (selectedArguments != null)
             engineArguments = selectedArguments;
         renderScale = Math.max(50, Math.min(100, getIntent().getIntExtra(EXTRA_RENDER_SCALE, 100)));
+        viewDistance = Math.max(40, Math.min(100,
+            getIntent().getIntExtra(EXTRA_VIEW_DISTANCE, 80)));
+        String selectedMasterHost = getIntent().getStringExtra(EXTRA_MASTER_SERVER_HOST);
+        if (selectedMasterHost != null &&
+            (selectedMasterHost.isEmpty() || selectedMasterHost.matches("[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?")))
+            masterServerHost = selectedMasterHost;
+        int selectedMasterPort = getIntent().getIntExtra(EXTRA_MASTER_SERVER_PORT, 28910);
+        if (selectedMasterPort >= 1 && selectedMasterPort <= 65535)
+            masterServerPort = selectedMasterPort;
         File profileDirectory = new File(getFilesDir(), "profiles/" + profileId);
         if (!profileDirectory.exists())
             profileDirectory.mkdirs();
@@ -95,6 +110,9 @@ public final class OpenXRayActivity extends SDLActivity {
             "--profile-id", profileId,
             "--profile-name", profileName,
             "--render-scale", Integer.toString(renderScale),
+            "--view-distance", Integer.toString(viewDistance),
+            "--master-host", masterServerHost,
+            "--master-port", Integer.toString(masterServerPort),
             "--engine-args", engineArguments
         };
     }

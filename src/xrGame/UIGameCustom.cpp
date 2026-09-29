@@ -453,17 +453,57 @@ void CMapListHelper::Load()
         FS.unload_archive(arch);
     }
     levelsPath->_set_root(prevRoot.c_str());
-    if (m_storage.empty())
-        Log("! Unable to fill MP map list (no maps discovered).");
 
     FS.update_path(cfgFileName, "$game_config$", "mp" DELIMITER "map_list.ltx");
     if (!FS.exist(cfgFileName))
     {
+        if (m_storage.empty())
+            Log("! Unable to fill MP map list (no maps discovered).");
         Log("~ Can't open MP map list:", cfgFileName);
         return;
     }
 
     CInifile maplistCfg(cfgFileName);
+
+    // Shadow of Chernobyl keeps the multiplayer map names directly in
+    // map_list.ltx. Later games put [map_usage] into each level.ltx instead,
+    // which is what the archive scan above handles. Retail SoC map archives do
+    // not contain that newer metadata, so without this compatibility path the
+    // host screen has no maps and leaves its Create button disabled.
+    if (ShadowOfChernobylMode)
+    {
+        static constexpr pcstr legacyGameTypes[] = { "deathmatch", "teamdeathmatch", "artefacthunt" };
+        for (pcstr gameType : legacyGameTypes)
+        {
+            if (!maplistCfg.section_exist(gameType))
+                continue;
+
+            SGameTypeMaps* suitableLevels = GetMapListInt(gameType);
+            if (!suitableLevels)
+            {
+                suitableLevels = &m_storage.emplace_back(
+                    SGameTypeMaps{ gameType, ParseStringToGameType(gameType) });
+            }
+
+            for (const CInifile::Item& mapEntry : maplistCfg.r_section(gameType).Data)
+            {
+                if (!mapEntry.first.c_str() || !mapEntry.first.size())
+                    continue;
+
+                MPLevelDesc levelDesc;
+                levelDesc.map_name = mapEntry.first;
+                levelDesc.map_ver = "1.0";
+
+                auto& levelNames = suitableLevels->m_map_names;
+                if (std::find(levelNames.begin(), levelNames.end(), levelDesc) == levelNames.end())
+                    levelNames.push_back(levelDesc);
+            }
+        }
+    }
+
+    if (m_storage.empty())
+        Log("! Unable to fill MP map list (no maps discovered).");
+
     if (!maplistCfg.section_exist("weather"))
     {
         Log("~ MP map list has no [weather] section:", cfgFileName);

@@ -44,9 +44,14 @@ public final class LauncherActivity extends Activity {
     private static final String PROFILE_IDS = "profile_ids";
     private static final String SELECTED_PROFILE = "selected_profile";
     private static final String PROFILE_PREFIX = "profile.";
+    private static final int DEFAULT_MASTER_PORT = 28910;
     private static final int[] RENDER_SCALES = {100, 80, 67, 50};
     private static final String[] RENDER_SCALE_LABELS = {
         "Исходное Качество (100%)", "Высоко (80%)", "Баланс (66%)", "Производительность (50%)"
+    };
+    private static final int[] VIEW_DISTANCES = {100, 80, 60, 40};
+    private static final String[] VIEW_DISTANCE_LABELS = {
+        "Максимальная (100%)", "Высокая (80%)", "Средняя (60%)", "Короткая (40%)"
     };
 
     private final List<Profile> profiles = new ArrayList<>();
@@ -55,7 +60,10 @@ public final class LauncherActivity extends Activity {
     private EditText profileName;
     private TextView selectedDirectory;
     private EditText launchArguments;
+    private EditText masterServerHost;
+    private EditText masterServerPort;
     private Spinner resolutionSpinner;
+    private Spinner viewDistanceSpinner;
     private Button launchButton;
     private Button deleteButton;
     private Profile activeProfile;
@@ -66,7 +74,10 @@ public final class LauncherActivity extends Activity {
         String name;
         String gameDataUri;
         String arguments;
+        String masterHost;
+        int masterPort;
         int renderScale;
+        int viewDistance;
     }
 
     @Override
@@ -153,6 +164,30 @@ public final class LauncherActivity extends Activity {
         resolutionHint.setPadding(0, dp(7), 0, 0);
         profileCard.addView(resolutionHint, matchWidth());
 
+        profileCard.addView(fieldLabel("Дальность прорисовки"), matchWidthWithTopMargin(16));
+        viewDistanceSpinner = new Spinner(this);
+        viewDistanceSpinner.setAdapter(new ArrayAdapter<>(this,
+            android.R.layout.simple_spinner_dropdown_item, VIEW_DISTANCE_LABELS));
+        viewDistanceSpinner.setBackgroundTintList(ColorStateList.valueOf(Color.rgb(103, 145, 111)));
+        profileCard.addView(viewDistanceSpinner, matchWidth());
+        TextView viewDistanceHint = label(
+            "Ограничивает дальние объекты до отправки в Vulkan",
+            12, Color.rgb(130, 148, 134), false);
+        viewDistanceHint.setPadding(0, dp(7), 0, 0);
+        profileCard.addView(viewDistanceHint, matchWidth());
+
+        profileCard.addView(fieldLabel("Мастер-сервер Shadow of Chernobyl"), matchWidthWithTopMargin(16));
+        masterServerHost = edit("IP или домен (пусто — стандартный сервис)");
+        profileCard.addView(masterServerHost, matchWidth());
+        masterServerPort = edit("Порт");
+        masterServerPort.setInputType(InputType.TYPE_CLASS_NUMBER);
+        profileCard.addView(masterServerPort, matchWidthWithTopMargin(7));
+        TextView masterServerHint = label(
+            "Адрес хранится отдельно в каждом профиле и переносится в его ярлык",
+            12, Color.rgb(130, 148, 134), false);
+        masterServerHint.setPadding(0, dp(7), 0, 0);
+        profileCard.addView(masterServerHint, matchWidth());
+
         profileCard.addView(fieldLabel("параметры запуска"), matchWidthWithTopMargin(16));
         launchArguments = edit("Параметры запуска");
         launchArguments.setSingleLine(false);
@@ -196,7 +231,10 @@ public final class LauncherActivity extends Activity {
             profile.name = "Основной";
             profile.gameDataUri = preferences.getString(LEGACY_GAME_DATA_URI, "");
             profile.arguments = "";
+            profile.masterHost = "";
+            profile.masterPort = DEFAULT_MASTER_PORT;
             profile.renderScale = 67;
+            profile.viewDistance = 80;
             profiles.add(profile);
             saveProfile(profile);
             saveProfileIds();
@@ -226,7 +264,10 @@ public final class LauncherActivity extends Activity {
         profile.name = name;
         profile.gameDataUri = preferences.getString(prefix + "uri", "");
         profile.arguments = preferences.getString(prefix + "args", "");
+        profile.masterHost = preferences.getString(prefix + "master_host", "");
+        profile.masterPort = preferences.getInt(prefix + "master_port", DEFAULT_MASTER_PORT);
         profile.renderScale = preferences.getInt(prefix + "scale", 67);
+        profile.viewDistance = preferences.getInt(prefix + "distance", 80);
         return profile;
     }
 
@@ -235,7 +276,10 @@ public final class LauncherActivity extends Activity {
         preferences.edit().putString(prefix + "name", profile.name)
             .putString(prefix + "uri", profile.gameDataUri)
             .putString(prefix + "args", profile.arguments)
-            .putInt(prefix + "scale", profile.renderScale).apply();
+            .putString(prefix + "master_host", profile.masterHost)
+            .putInt(prefix + "master_port", profile.masterPort)
+            .putInt(prefix + "scale", profile.renderScale)
+            .putInt(prefix + "distance", profile.viewDistance).apply();
     }
 
     private void saveProfileIds() {
@@ -271,8 +315,11 @@ public final class LauncherActivity extends Activity {
         preferences.edit().putString(SELECTED_PROFILE, profile.id).apply();
         profileName.setText(profile.name);
         launchArguments.setText(profile.arguments);
+        masterServerHost.setText(profile.masterHost);
+        masterServerPort.setText(Integer.toString(profile.masterPort));
         selectedDirectory.setText(profile.gameDataUri.isEmpty() ? "Каталог не выбран" : readableUri(profile.gameDataUri));
         resolutionSpinner.setSelection(scaleIndex(profile.renderScale));
+        viewDistanceSpinner.setSelection(viewDistanceIndex(profile.viewDistance));
         launchButton.setEnabled(hasPersistedReadPermission(profile.gameDataUri));
         deleteButton.setEnabled(profiles.size() > 1);
     }
@@ -286,9 +333,30 @@ public final class LauncherActivity extends Activity {
                 Toast.makeText(this, "Введите название профиля", Toast.LENGTH_LONG).show();
             return false;
         }
+        String masterHost = masterServerHost.getText().toString().trim();
+        if (!masterHost.isEmpty() &&
+            !masterHost.matches("[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?")) {
+            if (showErrors)
+                Toast.makeText(this, "Введите IP или домен без http:// и пути", Toast.LENGTH_LONG).show();
+            return false;
+        }
+        int masterPort;
+        try {
+            masterPort = Integer.parseInt(masterServerPort.getText().toString().trim());
+        } catch (NumberFormatException exception) {
+            masterPort = 0;
+        }
+        if (masterPort < 1 || masterPort > 65535) {
+            if (showErrors)
+                Toast.makeText(this, "Порт мастер-сервера должен быть от 1 до 65535", Toast.LENGTH_LONG).show();
+            return false;
+        }
         activeProfile.name = name;
         activeProfile.arguments = launchArguments.getText().toString().trim();
+        activeProfile.masterHost = masterHost;
+        activeProfile.masterPort = masterPort;
         activeProfile.renderScale = RENDER_SCALES[resolutionSpinner.getSelectedItemPosition()];
+        activeProfile.viewDistance = VIEW_DISTANCES[viewDistanceSpinner.getSelectedItemPosition()];
         saveProfile(activeProfile);
         saveProfileIds();
         return true;
@@ -301,7 +369,10 @@ public final class LauncherActivity extends Activity {
         profile.name = copyCurrent && activeProfile != null ? activeProfile.name + "- копирка" : "Новый профиль";
         profile.gameDataUri = copyCurrent && activeProfile != null ? activeProfile.gameDataUri : "";
         profile.arguments = copyCurrent && activeProfile != null ? activeProfile.arguments : "";
+        profile.masterHost = copyCurrent && activeProfile != null ? activeProfile.masterHost : "";
+        profile.masterPort = copyCurrent && activeProfile != null ? activeProfile.masterPort : DEFAULT_MASTER_PORT;
         profile.renderScale = copyCurrent && activeProfile != null ? activeProfile.renderScale : 67;
+        profile.viewDistance = copyCurrent && activeProfile != null ? activeProfile.viewDistance : 80;
         profiles.add(profile);
         saveProfile(profile);
         saveProfileIds();
@@ -322,7 +393,8 @@ public final class LauncherActivity extends Activity {
     private void deleteActiveProfile() {
         String prefix = PROFILE_PREFIX + activeProfile.id + ".";
         preferences.edit().remove(prefix + "name").remove(prefix + "uri")
-            .remove(prefix + "args").remove(prefix + "scale").apply();
+            .remove(prefix + "args").remove(prefix + "master_host").remove(prefix + "master_port")
+            .remove(prefix + "scale").remove(prefix + "distance").apply();
         profiles.remove(activeProfile);
         saveProfileIds();
         refreshProfileSpinner(profiles.get(0).id);
@@ -373,7 +445,10 @@ public final class LauncherActivity extends Activity {
         intent.putExtra(OpenXRayActivity.EXTRA_PROFILE_ID, profile.id);
         intent.putExtra(OpenXRayActivity.EXTRA_PROFILE_NAME, profile.name);
         intent.putExtra(OpenXRayActivity.EXTRA_ENGINE_ARGUMENTS, profile.arguments);
+        intent.putExtra(OpenXRayActivity.EXTRA_MASTER_SERVER_HOST, profile.masterHost);
+        intent.putExtra(OpenXRayActivity.EXTRA_MASTER_SERVER_PORT, profile.masterPort);
         intent.putExtra(OpenXRayActivity.EXTRA_RENDER_SCALE, profile.renderScale);
+        intent.putExtra(OpenXRayActivity.EXTRA_VIEW_DISTANCE, profile.viewDistance);
         startActivity(intent);
         if (fromShortcut)
             finish();
@@ -417,6 +492,13 @@ public final class LauncherActivity extends Activity {
             if (RENDER_SCALES[index] == value)
                 return index;
         return 2;
+    }
+
+    private int viewDistanceIndex(int value) {
+        for (int index = 0; index < VIEW_DISTANCES.length; ++index)
+            if (VIEW_DISTANCES[index] == value)
+                return index;
+        return 1;
     }
 
     private LinearLayout card() {

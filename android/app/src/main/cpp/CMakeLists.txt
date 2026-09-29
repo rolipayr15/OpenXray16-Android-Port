@@ -364,6 +364,7 @@ target_link_libraries(main PRIVATE
     xrODE
     GameSpy-oxr
     xrImGui
+    xrGameSpy
     xrGame
     ${ANDROID_LIBRARY}
     ${LOG_LIBRARY}

@@ -1,7 +1,7 @@
 #include "stdafx.h"
 #include "xrGameSpy.h"
 
-const char* GetGameVersion() { return GAME_VERSION; }
+const char* GetGameVersion() { return GAME_VERSION_SOC; }
 // WORD: Bit masks for languages
 #define SKU_HAS_E 0x0001 // English
 #define SKU_HAS_F 0x0002 // French

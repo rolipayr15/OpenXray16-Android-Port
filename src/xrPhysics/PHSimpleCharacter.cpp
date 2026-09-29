@@ -1273,9 +1273,14 @@ static bool RepairInvalidCharacterBody(
     const bool badAngularVelocity = !dV_valid(dBodyGetAngularVel(body));
     const bool badTorque = !dV_valid(dBodyGetTorque(body));
     const bool badForce = !dV_valid(dBodyGetForce(body));
-    Msg("~ Android physics: repairing character body in [%s]: rot=%d pos=%d lvel=%d avel=%d torque=%d force=%d",
-        context ? context : "unknown", badRotation, badPosition, badLinearVelocity,
-        badAngularVelocity, badTorque, badForce);
+    static u32 totalRepairCount = 0;
+    ++totalRepairCount;
+    if (totalRepairCount == 1 || (totalRepairCount % 4096) == 0)
+    {
+        Msg("~ Android physics: repaired %u invalid character body states; latest [%s]: rot=%d pos=%d lvel=%d avel=%d torque=%d force=%d",
+            totalRepairCount, context ? context : "unknown", badRotation, badPosition,
+            badLinearVelocity, badAngularVelocity, badTorque, badForce);
+    }
 
     if (badRotation)
     {

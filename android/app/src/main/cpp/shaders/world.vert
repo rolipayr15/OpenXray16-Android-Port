@@ -8,11 +8,13 @@ layout(location = 3) in vec2 lightmapTexcoord;
 layout(location = 0) out vec3 vertexNormal;
 layout(location = 1) out vec2 vertexTexcoord;
 layout(location = 2) out vec2 vertexLightmapTexcoord;
+layout(location = 3) out vec2 vertexDetailTexcoord;
 
 layout(push_constant) uniform WorldConstants
 {
     mat4 worldViewProjection;
     uint materialFlags;
+    float detailScale;
 } constants;
 
 void main()
@@ -25,4 +27,5 @@ void main()
     vertexNormal = normal;
     vertexTexcoord = texcoord;
     vertexLightmapTexcoord = lightmapTexcoord;
+    vertexDetailTexcoord = texcoord * constants.detailScale;
 }

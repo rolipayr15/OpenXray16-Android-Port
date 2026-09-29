@@ -27,6 +27,7 @@
 
 #define GAMESPY_GAMENAME_SOC "stalkersc"
 #define GAMESPY_GAMEKEY_SOC "t9Fj3Mx"
+#define GAME_VERSION_SOC "1.0006"
 
 #define GAMESPY_GP_NAMESPACE_ID 1 /*gamespy global namespace*/
 

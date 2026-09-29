@@ -54,6 +54,7 @@ public:
     float GetMaterial(const shared_str& tex_name) const;
     void GetTextureUsage(const shared_str& tex_name, bool& bDiffuse, bool& bBump) const;
     BOOL GetDetailTexture(const shared_str& tex_name, LPCSTR& res, R_constant_setup*& CS) const;
+    BOOL GetDetailTextureInfo(const shared_str& tex_name, LPCSTR& res, float& scale) const;
     BOOL UseSteepParallax(const shared_str& tex_name) const;
 };
 } // namespace xray::render::RENDER_NAMESPACE

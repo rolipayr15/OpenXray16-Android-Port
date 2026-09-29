@@ -332,4 +332,16 @@ BOOL CTextureDescrMngr::GetDetailTexture(const shared_str& tex_name, LPCSTR& res
     }
     return FALSE;
 }
+
+BOOL CTextureDescrMngr::GetDetailTextureInfo(const shared_str& tex_name, LPCSTR& res, float& scale) const
+{
+    const map_TD::const_iterator description = m_texture_details.find(tex_name);
+    if (description == m_texture_details.end() || !description->second.m_assoc)
+        return FALSE;
+
+    res = description->second.m_assoc->detail_name.c_str();
+    const map_CS::const_iterator scaler = m_detail_scalers.find(tex_name);
+    scale = scaler == m_detail_scalers.end() || !scaler->second ? 1.f : scaler->second->scale;
+    return TRUE;
+}
 } // namespace xray::render::RENDER_NAMESPACE

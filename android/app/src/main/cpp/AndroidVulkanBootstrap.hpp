@@ -82,6 +82,7 @@ public:
     bool UpdateWorldMesh(AndroidVulkanWorldMesh mesh, const AndroidVulkanWorldVertex* vertices,
         std::size_t vertexCount);
     void DestroyWorldMesh(AndroidVulkanWorldMesh mesh);
+    void DestroyWorldMeshes(const AndroidVulkanWorldMesh* meshes, std::size_t meshCount);
     void BeginUiFrame();
     void BeginWorldFrame();
     void SetWorldClearColor(float red, float green, float blue);
@@ -95,7 +96,9 @@ public:
         std::uint32_t indexCount, std::int32_t vertexOffset,
         const float* worldViewProjection, AndroidVulkanUiTexture texture,
         AndroidVulkanUiTexture lightmapTexture = 0,
-        AndroidVulkanUiTexture hemiTexture = 0, std::uint32_t materialFlags = 0);
+        AndroidVulkanUiTexture hemiTexture = 0,
+        AndroidVulkanUiTexture detailTexture = 0, float detailScale = 1.f,
+        std::uint32_t materialFlags = 0);
     bool DrawFrame(std::uint64_t frameIndex, float elapsedSeconds);
     void GetSurfaceSize(std::uint32_t& width, std::uint32_t& height) const;
     void Shutdown();

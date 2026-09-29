@@ -15,6 +15,11 @@
 #include <vector>
 
 struct AndroidRenderModelPool;
+struct AndroidTextureDetailManager;
+
+// Profile-level visibility cap. Kept outside the game configuration so each
+// Android launcher profile can trade distant geometry for CPU/GPU headroom.
+void AndroidSetViewDistanceScale(float scale);
 
 // First Stage-6 bridge between the native Vulkan bootstrap and the render
 // lifecycle expected by CRenderDevice. Resource, model and UI services are
@@ -128,6 +133,8 @@ private:
         AndroidVulkanUiTexture texture{};
         AndroidVulkanUiTexture lightmapTexture{};
         AndroidVulkanUiTexture hemiTexture{};
+        AndroidVulkanUiTexture detailTexture{};
+        float detailScale{1.f};
         std::uint32_t materialFlags{};
         Fvector boundsCenter{};
         float boundsRadius{};
@@ -140,6 +147,7 @@ private:
         std::uint32_t vertexCount{};
         std::uint32_t indexCount{};
         AndroidVulkanUiTexture texture{};
+        std::uint32_t materialFlags{};
         std::vector<AndroidVulkanWorldVertex> uploadedVertices;
     };
 
@@ -148,6 +156,7 @@ private:
         AndroidVulkanWorldMesh mesh{};
         std::uint32_t indexCount{};
         AndroidVulkanUiTexture texture{};
+        std::uint32_t materialFlags{};
         bool hud{};
         float worldViewProjection[16]{};
     };
@@ -188,6 +197,7 @@ private:
 
     AndroidVulkanRenderer renderer;
     AndroidRenderModelPool* modelPool{};
+    AndroidTextureDetailManager* textureDetails{};
     std::string appFilesPath;
     SDL_Window* window{};
     std::uint64_t frameIndex{};
@@ -204,6 +214,7 @@ private:
     std::int32_t detailOffsetZ{};
     std::int32_t detailCenterX{};
     std::int32_t detailCenterZ{};
+    float maximumWorldDistance{};
     bool detailCenterValid{};
     bool initialized{};
     bool failed{};
