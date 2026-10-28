@@ -139,6 +139,7 @@ private:
         Fvector boundsCenter{};
         float boundsRadius{};
         Fmatrix transform{};
+        float worldRotation[9]{}; // row-major upper-left 3x3 for normal lighting
     };
 
     struct DynamicMesh
@@ -159,6 +160,7 @@ private:
         std::uint32_t materialFlags{};
         bool hud{};
         float worldViewProjection[16]{};
+        float worldRotation[9]{}; // row-major upper-left 3x3 for normal lighting
     };
 
     struct DetailModel

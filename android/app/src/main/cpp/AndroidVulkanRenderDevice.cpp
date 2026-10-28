@@ -1418,6 +1418,19 @@ void AndroidVulkanRenderDevice::model_Delete(IRenderVisual*& visual, bool discar
         xr_delete(visual);
         return;
     }
+    if (visual)
+    {
+        // Release the cached GPU mesh before the visual is destroyed so the map
+        // never holds a dangling IRenderVisual* key, and the buffers are freed
+        // when the object despawns instead of accumulating until level unload.
+        auto mesh = dynamicMeshes.find(visual);
+        if (mesh != dynamicMeshes.end())
+        {
+            if (mesh->second.mesh != 0)
+                renderer.DestroyWorldMesh(mesh->second.mesh);
+            dynamicMeshes.erase(mesh);
+        }
+    }
     AndroidModelDelete(modelPool, visual, discard);
 }
 void AndroidVulkanRenderDevice::model_Logging(bool enable) { AndroidModelSetLogging(modelPool, enable); }
@@ -1589,12 +1602,18 @@ void AndroidVulkanRenderDevice::UpdateDimensions(
 
 void AndroidVulkanRenderDevice::ClearDynamicMeshes()
 {
-    for (auto& [visual, mesh] : dynamicMeshes)
+    // Batch every handle so DestroyWorldMeshes performs a single device idle
+    // instead of one full stall per dynamic mesh.
+    std::vector<AndroidVulkanWorldMesh> handles;
+    handles.reserve(dynamicMeshes.size());
+    for (const auto& [visual, mesh] : dynamicMeshes)
     {
         (void)visual;
         if (mesh.mesh != 0)
-            renderer.DestroyWorldMesh(mesh.mesh);
+            handles.push_back(mesh.mesh);
     }
+    if (!handles.empty())
+        renderer.DestroyWorldMeshes(handles.data(), handles.size());
     dynamicMeshes.clear();
     dynamicDraws.clear();
 }

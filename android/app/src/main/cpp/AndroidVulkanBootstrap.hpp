@@ -94,7 +94,8 @@ public:
         AndroidVulkanUiTextureMode textureMode = AndroidVulkanUiTextureMode::Normal);
     void SubmitWorldMesh(AndroidVulkanWorldMesh mesh, std::uint32_t firstIndex,
         std::uint32_t indexCount, std::int32_t vertexOffset,
-        const float* worldViewProjection, AndroidVulkanUiTexture texture,
+        const float* worldViewProjection, const float* worldRotation,
+        AndroidVulkanUiTexture texture,
         AndroidVulkanUiTexture lightmapTexture = 0,
         AndroidVulkanUiTexture hemiTexture = 0,
         AndroidVulkanUiTexture detailTexture = 0, float detailScale = 1.f,

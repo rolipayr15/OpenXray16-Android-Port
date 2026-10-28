@@ -22,7 +22,11 @@ commercial S.T.A.L.K.E.R. assets. You must provide your own legally obtained gam
 
 ## Important info
 
-At the moment, only SoC has been tested (though it is not possible to play it fully... yet). The other two games of the trilogy have not been tested.
+The engine host now discovers game resources recursively: pick the root of any
+installation (SoC, Clear Sky or Call of Pripyat, a repack or a modded layout) and
+the archives and the game's own `fsgame.ltx` are located and mounted automatically.
+Shadow of Chernobyl is the most tested target; Clear Sky and Call of Pripyat are
+experimental. Playing through the full story is not possible yet.
 
 ## Device requirements
 
@@ -63,9 +67,16 @@ More details and device instructions are in the [Android build guide](android/RE
 ## Installing game data
 
 1. Install the APK on the Android device.
-2. Copy your original game installation to accessible device storage.
-3. Open the launcher and choose the installation directory with the system folder picker.
+2. Copy your original game installation (or a mod/repack) to accessible device storage.
+3. Open the launcher and choose the installation root directory with the system folder picker.
 4. Press **Start engine host**.
+
+The launcher walks the selected tree recursively and finds `gamedata.db*`,
+`resources/*.db*`, `levels/*.db*`, `patches/*.db*`, `localization/*.db*`, `mp/*.db*`
+and the game's own `fsgame.ltx`, so licensed SoC/CS/CoP installs and modded layouts
+work without a fixed folder structure. Files that a ransomware has encrypted
+(`*.db.ntp`) are skipped safely and reported in the log; replace them with clean
+copies from a trusted source.
 
 The permission is retained by Android. The port does not request broad storage access
 and does not package, upload or redistribute the selected data.

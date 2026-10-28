@@ -81,6 +81,7 @@ struct WorldDraw
     float detailScale{1.f};
     std::uint32_t materialFlags{};
     float worldViewProjection[16]{};
+    float worldRotation[9]{}; // row-major upper-left 3x3 of the model->world transform
 };
 
 struct WorldPushConstants
@@ -92,9 +93,22 @@ struct WorldPushConstants
     float ambientAndSunDirectionX[4]{};
     float hemiAndSunDirectionY[4]{};
     float sunColorAndDirectionZ[4]{};
+    // Upper-left 3x3 of the model->world rotation, passed as GLSL mat3 columns
+    // (each column padded to a vec4 per std430). world.vert computes
+    // worldNormal = mat3(col0, col1, col2) * normal.
+    float normalMatrixCol0[4]{};
+    float normalMatrixCol1[4]{};
+    float normalMatrixCol2[4]{};
 };
 
-static_assert(sizeof(WorldPushConstants) == 128);
+static_assert(sizeof(WorldPushConstants) == 176);
+
+void SetIdentityRotation(float (&rotation)[9])
+{
+    rotation[0] = 1.f; rotation[1] = 0.f; rotation[2] = 0.f;
+    rotation[3] = 0.f; rotation[4] = 1.f; rotation[5] = 0.f;
+    rotation[6] = 0.f; rotation[7] = 0.f; rotation[8] = 1.f;
+}
 
 void LogVulkanError(const char* operation, VkResult result)
 {
@@ -687,9 +701,9 @@ public:
 
     void SubmitWorldMesh(AndroidVulkanWorldMesh handle, std::uint32_t firstIndex,
         std::uint32_t indexCount, std::int32_t vertexOffset, const float* worldViewProjection,
-        AndroidVulkanUiTexture texture, AndroidVulkanUiTexture lightmapTexture,
-        AndroidVulkanUiTexture hemiTexture, AndroidVulkanUiTexture detailTexture,
-        float detailScale, std::uint32_t materialFlags)
+        const float* worldRotation, AndroidVulkanUiTexture texture,
+        AndroidVulkanUiTexture lightmapTexture, AndroidVulkanUiTexture hemiTexture,
+        AndroidVulkanUiTexture detailTexture, float detailScale, std::uint32_t materialFlags)
     {
         if (handle == 0 || handle > worldMeshes.size() || !worldViewProjection)
             return;
@@ -712,6 +726,10 @@ public:
         draw.detailScale = detailScale;
         draw.materialFlags = materialFlags;
         std::memcpy(draw.worldViewProjection, worldViewProjection, sizeof(draw.worldViewProjection));
+        if (worldRotation)
+            std::memcpy(draw.worldRotation, worldRotation, sizeof(draw.worldRotation));
+        else
+            SetIdentityRotation(draw.worldRotation);
 
         // Static level visuals are frequently consecutive slices of the same
         // index buffer with identical state. Once both survived visibility
@@ -729,7 +747,9 @@ public:
                 previous.detailScale == draw.detailScale &&
                 previous.materialFlags == draw.materialFlags &&
                 std::memcmp(previous.worldViewProjection, draw.worldViewProjection,
-                    sizeof(draw.worldViewProjection)) == 0;
+                    sizeof(draw.worldViewProjection)) == 0 &&
+                std::memcmp(previous.worldRotation, draw.worldRotation,
+                    sizeof(draw.worldRotation)) == 0;
             if (contiguous && compatible &&
                 draw.indexCount <= UINT32_MAX - previous.indexCount)
             {
@@ -1878,12 +1898,13 @@ private:
             VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
         worldAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         VkPipelineRasterizationStateCreateInfo worldRasterizer = rasterizer;
-        // CPU-decoded OGF geometry is clockwise after the Android clip-space
-        // correction in world.vert.  Keep only the authored front faces;
-        // alpha-tested foliage and explicitly two-sided materials use the
-        // companion no-cull pipeline below.
+        // world.vert negates clip-space Y to convert X-Ray's D3D convention to
+        // Vulkan NDC, and that reflection reverses triangle winding. Authored
+        // front faces therefore arrive counter-clockwise, so treat CCW as front
+        // and keep back-face culling for opaque dynamic/HUD geometry. Alpha-
+        // tested and two-sided materials use the no-cull pipelines below.
         worldRasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-        worldRasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+        worldRasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         VkPipelineDepthStencilStateCreateInfo depthState{
             VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         depthState.depthTestEnable = VK_TRUE;
@@ -2092,6 +2113,17 @@ private:
                     constants.hemiAndSunDirectionY[3] = worldSunDirection[1];
                     std::copy_n(worldSunColor, 3, constants.sunColorAndDirectionZ);
                     constants.sunColorAndDirectionZ[3] = worldSunDirection[2];
+                    // Row-major upper-left 3x3 of the model->world rotation,
+                    // passed as GLSL mat3 columns (std430 pads each to a vec4).
+                    constants.normalMatrixCol0[0] = draw.worldRotation[0];
+                    constants.normalMatrixCol0[1] = draw.worldRotation[1];
+                    constants.normalMatrixCol0[2] = draw.worldRotation[2];
+                    constants.normalMatrixCol1[0] = draw.worldRotation[3];
+                    constants.normalMatrixCol1[1] = draw.worldRotation[4];
+                    constants.normalMatrixCol1[2] = draw.worldRotation[5];
+                    constants.normalMatrixCol2[0] = draw.worldRotation[6];
+                    constants.normalMatrixCol2[1] = draw.worldRotation[7];
+                    constants.normalMatrixCol2[2] = draw.worldRotation[8];
                     if (!hasBoundConstants ||
                         std::memcmp(&boundConstants, &constants, sizeof(constants)) != 0)
                     {
@@ -2604,12 +2636,12 @@ void AndroidVulkanRenderer::SubmitUiBatch(const AndroidVulkanUiVertex* vertices,
 
 void AndroidVulkanRenderer::SubmitWorldMesh(AndroidVulkanWorldMesh mesh,
     std::uint32_t firstIndex, std::uint32_t indexCount, std::int32_t vertexOffset,
-    const float* worldViewProjection, AndroidVulkanUiTexture texture,
+    const float* worldViewProjection, const float* worldRotation, AndroidVulkanUiTexture texture,
     AndroidVulkanUiTexture lightmapTexture, AndroidVulkanUiTexture hemiTexture,
     AndroidVulkanUiTexture detailTexture, float detailScale, std::uint32_t materialFlags)
 {
     implementation->renderer.SubmitWorldMesh(
-        mesh, firstIndex, indexCount, vertexOffset, worldViewProjection, texture,
+        mesh, firstIndex, indexCount, vertexOffset, worldViewProjection, worldRotation, texture,
         lightmapTexture, hemiTexture, detailTexture, detailScale, materialFlags);
 }
 

@@ -77,9 +77,12 @@ Vulkan bridge.
 
 At startup the host:
 
-1. validates the selected SAF tree;
-2. exposes seekable `gamedata.db*` archives through descriptor-backed private links;
-3. mounts and validates the ShoC VFS/configuration graph;
+1. recursively walks the selected SAF tree for archives, loose `gamedata` folders and
+   the game's own `fsgame.ltx`;
+2. detects the game (SoC / Clear Sky / Call of Pripyat) and mirrors every archive into
+   app-private storage through descriptor-backed symlinks, preserving the layout;
+3. emits (or reuses, with only writable paths redirected) an `fsgame.ltx` and mounts
+   the real engine VFS/configuration graph;
 4. initializes the real engine and game module;
 5. creates the SDL surface and native Vulkan device;
 6. runs the original startup sequencer, UI and main menu.
@@ -90,13 +93,21 @@ Intro movies and the animated main-menu background use original game resources a
 
 ## Known limitations
 
-- The world renderer is still a bootstrap: level geometry and models are not visible.
-- Starting a new game reaches level/object initialization but not playable rendering.
-- Some render-factory services remain no-op implementations required for staged startup.
-- Dynamic video upload currently uses synchronous staging and queue waits; this will be
-  replaced with persistent asynchronous uploads.
+- The renderer is a bespoke forward Vulkan pass: no dynamic shadows, particles,
+  sky/clouds, rain, lens flares, wallmarks or post-processing are rendered yet
+  (their render services are still no-ops).
+- Dynamic-model normals are not yet rotated to world space, so sun/hemisphere
+  lighting on rotated characters/trees is approximate.
+- Loose (unarchived) `gamedata` files are not mounted through SAF descriptors yet;
+  only archives are mirrored. Loose overlays are the next discovery milestone.
+- Encrypted/corrupted `*.db.ntp` archives (ransomware damage) are skipped, not
+  recovered; replace them with clean copies.
+- Textures accumulate across level loads (the UI texture cache is only cleared on
+  full detach), which can grow memory on long sessions.
+- Dynamic video upload uses synchronous staging and queue waits; persistent
+  asynchronous uploads are planned.
 - Android pause/resume and surface loss need broader device testing.
-- Touch-first controls are not implemented.
+- ARMv7 builds are disabled until the ARM64 gameplay renderer stabilizes.
 
 ## Local archive fixture
 
