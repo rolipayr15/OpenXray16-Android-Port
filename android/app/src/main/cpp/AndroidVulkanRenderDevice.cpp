@@ -176,6 +176,23 @@ bool TextureUsesAlphaTest(const std::string& textureName)
     });
 }
 
+// Row-major upper-left 3x3 of an X-Ray (row-vector) transform with the scale
+// removed, i.e. the rotation that takes model-space normals to world space.
+void ExtractNormalRotation(const Fmatrix& transform, float (&rotation)[9])
+{
+    const Fvector* axes[] = {&transform.i, &transform.j, &transform.k};
+    for (int row = 0; row < 3; ++row)
+    {
+        Fvector axis = *axes[row];
+        const float length = axis.magnitude();
+        if (length > EPS_S)
+            axis.div(length);
+        rotation[row * 3 + 0] = axis.x;
+        rotation[row * 3 + 1] = axis.y;
+        rotation[row * 3 + 2] = axis.z;
+    }
+}
+
 float ConservativeVisibilityRadius(float radius)
 {
     // OGF bounds are authored for the legacy render graph and can be very
@@ -1178,6 +1195,7 @@ void AndroidVulkanRenderDevice::level_Load(IReader* level)
                         }
                     }
                 }
+                ExtractNormalRotation(draw.transform, draw.worldRotation);
                 levelDraws.push_back(draw);
             }
             else
@@ -1353,6 +1371,7 @@ void AndroidVulkanRenderDevice::add_Visual(
         worldViewProjection.mul(fullTransform, transform);
         std::memcpy(draw.worldViewProjection, &worldViewProjection._11,
             sizeof(draw.worldViewProjection));
+        ExtractNormalRotation(transform, draw.worldRotation);
         dynamicDraws.push_back(draw);
     }
 }
@@ -1492,7 +1511,7 @@ void AndroidVulkanRenderDevice::Render()
             Fmatrix worldViewProjection;
             worldViewProjection.mul(Device.mFullTransform, draw.transform);
             renderer.SubmitWorldMesh(levelMesh, draw.firstIndex, draw.indexCount,
-                draw.vertexOffset, &worldViewProjection._11, draw.texture,
+                draw.vertexOffset, &worldViewProjection._11, draw.worldRotation, draw.texture,
                 draw.lightmapTexture, draw.hemiTexture, draw.detailTexture,
                 draw.detailScale, draw.materialFlags);
             ++visibleLevelDraws;
@@ -1502,11 +1521,11 @@ void AndroidVulkanRenderDevice::Render()
     {
         if (model.mesh != 0 && model.drawIndexCount != 0)
             renderer.SubmitWorldMesh(model.mesh, 0, model.drawIndexCount, 0,
-                &Device.mFullTransform._11, model.texture, 0, 0, 0, 1.f, 8u | 16u);
+                &Device.mFullTransform._11, nullptr, model.texture, 0, 0, 0, 1.f, 8u | 16u);
     }
     for (const DynamicDraw& draw : dynamicDraws)
         renderer.SubmitWorldMesh(draw.mesh, 0, draw.indexCount, 0,
-            draw.worldViewProjection, draw.texture, 0, 0, 0, 1.f,
+            draw.worldViewProjection, draw.worldRotation, draw.texture, 0, 0, 0, 1.f,
             draw.materialFlags | (draw.hud ? 4u : 0u));
 
     if (frameIndex != 0 && frameIndex % 300 == 0)
