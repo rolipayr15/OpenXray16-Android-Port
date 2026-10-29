@@ -98,7 +98,7 @@ The script explicitly enables restore for legacy `packages.config` dependencies;
 - The Android app is a thin lifecycle, permissions, input, and storage host. Engine code remains native C++.
 - SDL is the first window, event, controller, audio-device, and lifecycle bridge.
 - Android must have its own `XR_PLATFORM_ANDROID` branch. Treating Bionic as ordinary desktop Linux is not a supported shortcut.
-- Native Vulkan is the primary renderer-bootstrap path. Desktop OpenGL through Mesa Zink is optional and may be selected only after the device passes the OpenGL 4.1 capability profile and the regular-APK Mesa/EGL path initializes successfully. A native GLES renderer remains a possible later compatibility track.
+- Native Vulkan is the default renderer. The upstream GL renderer (full X-Ray pipeline with real blenders, shaders and materials) also runs on OpenGL ES 3.2 as a selectable renderer: ES context and loader, ES shader preamble and MRT location rewrite, desktop-only calls replaced, and CPU decoding of BCn textures the GPU cannot sample. OpenXRay's GL shaders are engine resources packaged in the APK and exposed below the game's `$game_shaders$\gl`. Desktop OpenGL through Mesa Zink stays optional and capability-gated.
 - Native crashes must be symbolizable per ABI; release artifacts must retain unstripped symbols separately from packaged libraries.
 - The app must accept a user-selected data tree. Hard-coded shared-storage paths are forbidden because they break scoped storage and make device behavior vendor-dependent.
 - Writable engine state, caches, logs and generated compatibility files belong under the app-private directory. The user-selected tree is treated as read-only commercial input in both direct and SAF mode.
