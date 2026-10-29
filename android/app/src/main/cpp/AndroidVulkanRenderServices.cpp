@@ -175,10 +175,26 @@ bool LoadUiTexture(AndroidVulkanRenderDevice& device, const char* requestedName,
         return false;
     }
 
-    const gli::texture2d decoded = gli::convert(
+    gli::texture2d decoded = gli::convert(
         gli::texture2d(source), gli::FORMAT_RGBA8_UNORM_PACK8);
     if (decoded.empty())
         return false;
+
+    // ShoC font atlases keep glyph coverage in alpha (DXT5, white RGB). CS
+    // and CoP ship single-channel atlases with coverage in red and opaque
+    // alpha; give them the ShoC layout the font shader modes expect.
+    if (strstr(requestedName, "font") && gli::component_count(source.format()) == 1)
+    {
+        const gli::texture2d::extent_type extent = decoded.extent(0);
+        std::uint8_t* pixels = decoded.data<std::uint8_t>(0, 0, 0);
+        const std::size_t pixelCount = static_cast<std::size_t>(extent.x) * extent.y;
+        for (std::size_t index = 0; index < pixelCount; ++index)
+        {
+            std::uint8_t* pixel = pixels + index * 4;
+            pixel[3] = pixel[0];
+            pixel[0] = pixel[1] = pixel[2] = 255;
+        }
+    }
 
     const gli::texture2d::extent_type dimensions = decoded.extent(0);
     if (dimensions.x <= 0 || dimensions.y <= 0)

@@ -744,6 +744,7 @@ bool GameDataMount::Mount(GameDataSource& source, const std::vector<GameDataFile
 {
     archives = 0;
     looseFiles = 0;
+    damaged.clear();
     xrClearAndroidVirtualFiles();
     xrClearAndroidArchiveDescriptors();
 
@@ -779,9 +780,34 @@ bool GameDataMount::Mount(GameDataSource& source, const std::vector<GameDataFile
         fsgame = RewriteFsgame(base, "$game_root$");
         for (const GameDataFile& file : files)
         {
-            if (file.directory || PathRelativeToRoot(file.path, layout.gameRoot).empty())
+            const std::string relative = PathRelativeToRoot(file.path, layout.gameRoot);
+            if (file.directory || relative.empty())
                 continue;
             const std::string baseLower = LowerName(BaseName(file.path));
+            if (IsSuffixedArchiveName(baseLower))
+            {
+                // The stock locator only mounts *.db/*.xdb. Expose an intact
+                // suffixed archive under its real name through the gameroot
+                // link; remember damaged ones so the user can be told.
+                const int descriptor = source.Open(file.path);
+                const bool valid = descriptor >= 0 && ValidateArchiveDescriptor(descriptor, true);
+                if (descriptor >= 0)
+                    close(descriptor);
+                if (!valid)
+                {
+                    damaged.push_back(relative);
+                    continue;
+                }
+                std::string mounted = LowerName(relative);
+                mounted.erase(mounted.size() - 4); // drop ".ntp"
+                if (xrRegisterAndroidVirtualFile((privateRoot + "/gameroot/" + mounted).c_str(),
+                        (std::string(LocalFilePrefix) + source.AbsolutePath(file.path)).c_str(),
+                        file.size, file.modified))
+                {
+                    ++archives;
+                }
+                continue;
+            }
             if (IsArchiveName(baseLower))
                 ++archives;
             else
@@ -821,6 +847,8 @@ bool GameDataMount::Mount(GameDataSource& source, const std::vector<GameDataFile
                 {
                     __android_log_print(ANDROID_LOG_WARN, LogTag,
                         "Skipping archive that is not seekable or has no CFS header: %s", file.path.c_str());
+                    if (suffixed)
+                        damaged.push_back(relative);
                     continue;
                 }
                 if (suffixed)
@@ -839,6 +867,11 @@ bool GameDataMount::Mount(GameDataSource& source, const std::vector<GameDataFile
     }
 
     engineShaders = MountEngineShaders(privateRoot, fsgame, engineResources);
+    for (const std::string& path : damaged)
+    {
+        __android_log_print(ANDROID_LOG_WARN, LogTag,
+            "Damaged archive (no X-Ray header, likely encrypted by third-party software): %s", path.c_str());
+    }
 
     fsgamePath = privateRoot + "/fsgame.ltx";
     if (!WriteTextFile(fsgamePath, fsgame))

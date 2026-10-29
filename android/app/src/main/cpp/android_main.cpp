@@ -527,6 +527,30 @@ int main(int argc, char** argv)
         return 3;
     }
 
+    // Damaged multiplayer maps do not block single-player; anything else
+    // (resources, levels, patches) would end in an engine assertion later.
+    std::string blockingArchives;
+    for (const std::string& damaged : gameData.DamagedArchives())
+    {
+        std::string lower = damaged;
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+            [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+        if (lower.rfind("mp/", 0) != 0)
+            blockingArchives += "\n" + damaged;
+    }
+    if (!blockingArchives.empty())
+    {
+        const std::string message =
+            "Эти архивы игры повреждены: вместо данных X-Ray в них посторонние "
+            "(вероятно, зашифрованные) данные. Замените их чистыми копиями из "
+            "оригинальной установки и проверьте компьютер, с которого копировали "
+            "игру, антивирусом:\n" + blockingArchives;
+        __android_log_print(ANDROID_LOG_ERROR, LogTag, "%s", message.c_str());
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Повреждённые файлы игры", message.c_str(), nullptr);
+        SDL_Quit();
+        return 21;
+    }
+
     // Exercise the real locator on an engine-owned fixture. Archives from the
     // selected read-only SAF tree are exposed through borrowed descriptors;
     // writable state stays in the app-private directory.

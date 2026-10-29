@@ -85,11 +85,15 @@ public:
     size_t ArchiveCount() const { return archives; }
     size_t LooseFileCount() const { return looseFiles; }
     bool Direct() const { return direct; }
+    // Archives (relative to the installation) whose contents are not an X-Ray
+    // archive, e.g. "*.db.ntp" files left encrypted by third-party software.
+    const std::vector<std::string>& DamagedArchives() const { return damaged; }
 
 private:
     size_t archives = 0;
     size_t looseFiles = 0;
     size_t engineShaders = 0;
+    std::vector<std::string> damaged;
     bool direct = false;
     bool mounted = false;
 };
