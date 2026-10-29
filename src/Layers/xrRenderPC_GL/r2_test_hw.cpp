@@ -38,6 +38,12 @@ BOOL xrRender_test_hw()
 {
     ZoneScoped;
 
+#if defined(XR_PLATFORM_ANDROID)
+    // SDL on Android owns exactly one window (the activity's surface), so a
+    // hidden probe window is impossible; CHW::CreateDevice reports failure.
+    return TRUE;
+#endif
+
     // Check if minimal required OpenGL features are available
     const sdl_window_test_helper windowTest;
     if (windowTest.successful())

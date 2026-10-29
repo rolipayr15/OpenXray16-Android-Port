@@ -67,7 +67,16 @@ IC HRESULT CreateQuery(GLuint* pQuery, D3D_QUERY type)
 IC HRESULT GetData(GLuint query, void* pData, u32 DataSize)
 {
     if (DataSize == sizeof(GLint64))
+    {
+#if defined(XR_PLATFORM_ANDROID)
+        // Occlusion results are sample counts; GLES only reads them as uint.
+        GLuint result = 0;
+        CHK_GL(glGetQueryObjectuiv(query, GL_QUERY_RESULT, &result));
+        *static_cast<GLint64*>(pData) = result;
+#else
         CHK_GL(glGetQueryObjecti64v(query, GL_QUERY_RESULT, (GLint64*)pData));
+#endif
+    }
     else
         CHK_GL(glGetQueryObjectiv(query, GL_QUERY_RESULT, (GLint*)pData));
     return S_OK;

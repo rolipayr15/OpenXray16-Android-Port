@@ -455,7 +455,13 @@ ICF void CBackend::set_FillMode(u32 _mode)
     if (fill_mode != _mode)
     {
         fill_mode = _mode;
+#if defined(XR_PLATFORM_ANDROID)
+        // GLES has no polygon modes; wireframe is a debug-only view.
+        if (glPolygonModeNV)
+            glPolygonModeNV(GL_FRONT_AND_BACK, glStateUtils::ConvertFillMode(_mode));
+#else
         glPolygonMode(GL_FRONT_AND_BACK, glStateUtils::ConvertFillMode(_mode));
+#endif
     }
 }
 

@@ -2,6 +2,9 @@
 #include "r2.h"
 
 #include "Layers/xrRender/ShaderResourceTraits.h"
+#if defined(XR_PLATFORM_ANDROID)
+#include "Layers/xrRenderGL/glShaderSourceES.h"
+#endif
 #include "xrCore/FileCRC32.h"
 
 namespace xray::render::RENDER_NAMESPACE
@@ -144,10 +147,19 @@ private:
         const size_t dataLength = file->length();
 
         // Copy source file data into a null-terminated buffer
+#if defined(XR_PLATFORM_ANDROID)
+        // GLSL ES needs explicit locations for multiple fragment outputs.
+        const xr_string rewritten = glRewriteShaderSourceES(xr_string(sourceData, dataLength).c_str());
+        cpstr data = xr_alloc<char>(rewritten.size() + 2);
+        CopyMemory(data, rewritten.data(), rewritten.size());
+        data[rewritten.size()] = '\n';
+        data[rewritten.size() + 1] = '\0';
+#else
         cpstr data = xr_alloc<char>(dataLength + 2);
         CopyMemory(data, sourceData, dataLength);
         data[dataLength] = '\n';
         data[dataLength + 1] = '\0';
+#endif
         m_includes.push_back(data);
         m_source.push_back(data);
 
@@ -224,6 +236,10 @@ HRESULT CRender::shader_compile(pcstr name, IReader* fs, pcstr pFunctionName,
         sh_name.append(option);
     };
 
+#if defined(XR_PLATFORM_ANDROID)
+    options.add(glShaderPreambleES());
+    sh_name.append(1u);
+#else
     options.add("#version 410");
     options.add("#extension GL_ARB_separate_shader_objects : enable");
 
@@ -233,6 +249,7 @@ HRESULT CRender::shader_compile(pcstr name, IReader* fs, pcstr pFunctionName,
 #else
     options.add("#pragma optimize (on)");
     sh_name.append(1u);
+#endif
 #endif
 
     xr_sprintf(c_name, "// %s.%s", name, pTarget);

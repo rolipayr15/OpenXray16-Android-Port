@@ -8,6 +8,41 @@
 
 namespace xray::render::RENDER_NAMESPACE
 {
+#if defined(XR_PLATFORM_ANDROID)
+namespace
+{
+bool IsCompressedFormatSampleableES(gli::format format)
+{
+    if (!gli::is_compressed(format))
+        return true;
+    if (format >= gli::FORMAT_RGB_DXT1_UNORM_BLOCK8 && format <= gli::FORMAT_RGBA_DXT5_SRGB_BLOCK16)
+        return GLAD_GL_EXT_texture_compression_s3tc != 0;
+    if (format >= gli::FORMAT_R_ATI1N_UNORM_BLOCK8 && format <= gli::FORMAT_RG_ATI2N_SNORM_BLOCK16)
+        return GLAD_GL_EXT_texture_compression_rgtc != 0;
+    if (format >= gli::FORMAT_RGB_BP_UFLOAT_BLOCK16 && format <= gli::FORMAT_RGBA_BP_SRGB_BLOCK16)
+        return GLAD_GL_EXT_texture_compression_bptc != 0;
+    return true; // ETC2/EAC and ASTC are core in OpenGL ES 3.2
+}
+
+// CPU decode to RGBA8 with the full mip chain. This costs 4-8x the memory of
+// the block-compressed original; transcoding to ETC2/ASTC is the follow-up.
+gli::texture DecodeTextureES(const gli::texture& texture)
+{
+    switch (texture.target())
+    {
+    case gli::TARGET_2D:
+        return gli::convert(gli::texture2d(texture), gli::FORMAT_RGBA8_UNORM_PACK8);
+    case gli::TARGET_CUBE:
+        return gli::convert(gli::texture_cube(texture), gli::FORMAT_RGBA8_UNORM_PACK8);
+    case gli::TARGET_3D:
+        return gli::convert(gli::texture3d(texture), gli::FORMAT_RGBA8_UNORM_PACK8);
+    default:
+        return texture;
+    }
+}
+} // namespace
+#endif
+
 void fix_texture_name(pstr fn)
 {
     pstr _ext = strext(fn);
@@ -113,7 +148,15 @@ GLuint CRender::texture_load(LPCSTR fRName, u32& ret_msize, GLenum& ret_desc)
 
     u32 mip_cnt = u32(-1); // XXX: write to it when reading with GLI!
 
+#if defined(XR_PLATFORM_ANDROID)
+    // Game textures are BCn (DXT); most mobile GPUs only sample ETC2/ASTC.
+    // Decode formats the driver cannot sample instead of uploading garbage.
+    if (!IsCompressedFormatSampleableES(texture.format()) && gli::has_decoder(texture.format()))
+        texture = DecodeTextureES(texture);
+    gli::gl GL(gli::gl::PROFILE_ES30);
+#else
     gli::gl GL(gli::gl::PROFILE_GL33);
+#endif
 
     gli::gl::format const format = GL.translate(texture.format(), texture.swizzles());
     GLenum target = GL.translate(texture.target());

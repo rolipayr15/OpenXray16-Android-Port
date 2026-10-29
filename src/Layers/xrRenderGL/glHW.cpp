@@ -107,7 +107,15 @@ void CHW::CreateDevice(SDL_Window* hWnd)
     int version;
     {
         ZoneScopedN("gladLoadGL");
+#if defined(XR_PLATFORM_ANDROID)
+        version = gladLoadGLES2(reinterpret_cast<GLADloadfunc>(SDL_GL_GetProcAddress));
+        // The renderer gates its program pipeline and shader cache on the
+        // desktop ARB extensions; both are core in OpenGL ES 3.1 / 3.0.
+        GLAD_GL_ARB_separate_shader_objects = GLAD_GL_ES_VERSION_3_1;
+        GLAD_GL_ARB_get_program_binary = GLAD_GL_ES_VERSION_3_0;
+#else
         version = gladLoadGL(reinterpret_cast<GLADloadfunc>(SDL_GL_GetProcAddress));
+#endif
     }
     if (version == 0)
     {
@@ -180,7 +188,13 @@ void CHW::SetPrimaryAttributes(u32& windowFlags)
 {
     windowFlags |= SDL_WINDOW_OPENGL;
 
+#if defined(XR_PLATFORM_ANDROID)
+    // Mobile GPUs expose OpenGL ES; 3.2 covers separable programs, program
+    // binaries, geometry shaders and border clamping used by this renderer.
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+#else
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+#endif
 
     SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
@@ -193,8 +207,13 @@ void CHW::SetPrimaryAttributes(u32& windowFlags)
 
     if (!strstr(Core.Params, "-no_gl_context"))
     {
+#if defined(XR_PLATFORM_ANDROID)
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+#else
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+#endif
     }
 }
 

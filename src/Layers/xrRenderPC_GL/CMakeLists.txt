@@ -352,6 +352,8 @@ target_sources(xrRender_GL PRIVATE
     ../xrRenderGL/glResourceManager_Scripting.cpp
     ../xrRenderGL/glSH_RT.cpp
     ../xrRenderGL/glSH_Texture.cpp
+    ../xrRenderGL/glShaderSourceES.cpp
+    ../xrRenderGL/glShaderSourceES.h
     ../xrRenderGL/glState.cpp
     ../xrRenderGL/glState.h
     ../xrRenderGL/glStateUtils.cpp

@@ -87,13 +87,24 @@ void CTexture::apply_theora(CBackend& cmd_list, u32 dwStage)
         // Clear and map buffer for writing
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pBuffer);
         CHK_GL(glBufferData(GL_PIXEL_UNPACK_BUFFER, _w * _h * 4, nullptr, GL_STREAM_DRAW)); // Invalidate buffer
+#if defined(XR_PLATFORM_ANDROID)
+        CHK_GL(pBits = (u32*)glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, _w * _h * 4,
+            GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT));
+#else
         CHK_GL(pBits = (u32*)glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_WRITE_ONLY));
+#endif
 
         // Write to the buffer and copy it to the texture
         int _pos = 0;
         pTheora->DecompressFrame(pBits, 0, _pos);
         CHK_GL(glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER));
+#if defined(XR_PLATFORM_ANDROID)
+        // GLES has no BGRA upload format; the texture swizzle set at creation
+        // (see CTexture::Load) swaps the channels back when sampling.
+        CHK_GL(glTexSubImage2D(desc, 0, 0, 0, _w, _h, GL_RGBA, GL_UNSIGNED_BYTE, nullptr));
+#else
         CHK_GL(glTexSubImage2D(desc, 0, 0, 0, _w, _h, GL_BGRA, GL_UNSIGNED_BYTE, nullptr));
+#endif
 
         // Unmap the buffer to restore normal texture functionality
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
@@ -204,6 +215,11 @@ void CTexture::Load()
             glGenTextures(1, &pTexture);
             glBindTexture(GL_TEXTURE_2D, pTexture);
             CHK_GL(glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, _w, _h));
+#if defined(XR_PLATFORM_ANDROID)
+            // Theora frames are BGRA; GLES uploads them as RGBA (apply_theora).
+            CHK_GL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_BLUE));
+            CHK_GL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED));
+#endif
 
             pSurface = pTexture;
             desc = GL_TEXTURE_2D;

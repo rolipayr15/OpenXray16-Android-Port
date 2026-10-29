@@ -53,8 +53,15 @@ void CRT::create(LPCSTR Name, u32 w, u32 h, D3DFORMAT f, u32 SampleCount /*= 1*/
     glGenTextures(1, &pRT);
     CHK_GL(glBindTexture(target, pRT));
     if (SampleCount > 1)
+    {
+#if defined(XR_PLATFORM_ANDROID)
+        CHK_GL(glTexStorage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, SampleCount,
+            glTextureUtils::ConvertTextureFormat(fmt), w, h, GL_FALSE));
+#else
         CHK_GL(glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, SampleCount, glTextureUtils::ConvertTextureFormat(fmt), w,
         h, GL_FALSE));
+#endif
+    }
     else
         CHK_GL(glTexStorage2D(GL_TEXTURE_2D, 1, glTextureUtils::ConvertTextureFormat(fmt), w, h));
 
@@ -88,7 +95,13 @@ void CRT::reset_end()
 void CRT::resolve_into(CRT& destination) const
 {
     glReadBuffer(GL_COLOR_ATTACHMENT0);
+#if defined(XR_PLATFORM_ANDROID)
+    // GLES requires draw buffer i to be GL_COLOR_ATTACHMENTi or GL_NONE.
+    constexpr GLenum resolveTarget[] = { GL_NONE, GL_COLOR_ATTACHMENT1 };
+    glDrawBuffers(std::size(resolveTarget), resolveTarget);
+#else
     glDrawBuffer(GL_COLOR_ATTACHMENT1);
+#endif
 
     constexpr GLenum buffers[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
     RCache.set_RT(pRT, 0);

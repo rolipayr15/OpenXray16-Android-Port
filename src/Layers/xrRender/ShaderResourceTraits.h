@@ -70,10 +70,12 @@ inline std::pair<char, GLuint> GLCompileShader(pcstr* buffer, size_t size, pcstr
         CHK_GL(glProgramParameteri(program, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, (GLint)GL_TRUE));
 
     CHK_GL(glAttachShader(program, shader));
+#if !defined(XR_PLATFORM_ANDROID)
     CHK_GL(glBindFragDataLocation(program, 0, "SV_Target"));
     CHK_GL(glBindFragDataLocation(program, 0, "SV_Target0"));
     CHK_GL(glBindFragDataLocation(program, 1, "SV_Target1"));
     CHK_GL(glBindFragDataLocation(program, 2, "SV_Target2"));
+#endif
     CHK_GL(glLinkProgram(program));
     CHK_GL(glDetachShader(program, shader));
     CHK_GL(glDeleteShader(shader));
@@ -99,10 +101,12 @@ inline std::pair<char, GLuint> GLUseBinary(pcstr* buffer, size_t size, const GLe
         CHK_GL(glObjectLabel(GL_PROGRAM, program, -1, name));
     CHK_GL(glProgramParameteri(program, GL_PROGRAM_SEPARABLE, (GLint)GL_TRUE));
 
+#if !defined(XR_PLATFORM_ANDROID)
     CHK_GL(glBindFragDataLocation(program, 0, "SV_Target"));
     CHK_GL(glBindFragDataLocation(program, 0, "SV_Target0"));
     CHK_GL(glBindFragDataLocation(program, 1, "SV_Target1"));
     CHK_GL(glBindFragDataLocation(program, 2, "SV_Target2"));
+#endif
 
     CHK_GL(glProgramBinary(program, *format, buffer, size));
     CHK_GL(glGetProgramiv(program, GL_LINK_STATUS, &status));
@@ -130,10 +134,12 @@ static GLuint GLLinkMonolithicProgram(pcstr name, GLuint ps, GLuint vs, GLuint g
     CHK_GL(glAttachShader(program, vs));
     if (gs)
         CHK_GL(glAttachShader(program, gs));
+#if !defined(XR_PLATFORM_ANDROID)
     CHK_GL(glBindFragDataLocation(program, 0, "SV_Target"));
     CHK_GL(glBindFragDataLocation(program, 0, "SV_Target0"));
     CHK_GL(glBindFragDataLocation(program, 1, "SV_Target1"));
     CHK_GL(glBindFragDataLocation(program, 2, "SV_Target2"));
+#endif
     CHK_GL(glLinkProgram(program));
     CHK_GL(glDetachShader(program, ps));
     CHK_GL(glDetachShader(program, vs));
