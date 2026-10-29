@@ -12,6 +12,9 @@
 #endif
 #include <sys/stat.h>
 #include <fcntl.h>
+#if defined(XR_PLATFORM_ANDROID)
+#include "Android/AndroidArchiveDescriptors.hpp"
+#endif
 
 #ifdef FS_DEBUG
 XRCORE_API u32 g_file_mapped_memory = 0;
@@ -91,7 +94,11 @@ static int open_internal(pcstr fn, int& handle)
 #elif defined(XR_PLATFORM_POSIX)
     pstr conv_fn = xr_strdup(fn);
     convert_path_separators(conv_fn);
+#   if defined(XR_PLATFORM_ANDROID)
+    handle = xrAndroidOpenReadOnly(conv_fn);
+#   else
     handle = open(conv_fn, _O_RDONLY);
+#   endif
     xr_free(conv_fn);
 
     return (handle == -1);
@@ -571,12 +578,18 @@ CVirtualFileReader::CVirtualFileReader(pcstr cFileName)
 #elif defined(XR_PLATFORM_POSIX)
     pstr conv_path = xr_strdup(cFileName);
     convert_path_separators(conv_path);
+#   if defined(XR_PLATFORM_ANDROID)
+    // A reader must never create files: O_CREAT used to leave empty files in
+    // app storage for every SAF-only loose file it failed to find.
+    hSrcFile = xrAndroidOpenReadOnly(conv_path);
+#   else
     hSrcFile = ::open(conv_path, O_RDONLY | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH); //за такое использование указателя нужно убивать, но пока пусть будет
+#   endif
     xr_free(conv_path);
     R_ASSERT3(hSrcFile != -1, cFileName, xrDebug::ErrorToString(GetLastError()));
     struct stat file_info;
     ::fstat(hSrcFile, &file_info);
-    Size = (int)file_info.st_size;
+    Size = (size_t)file_info.st_size;
     R_ASSERT3(Size, cFileName, xrDebug::ErrorToString(GetLastError()));
     data = (char*)::mmap(NULL, Size, PROT_READ, MAP_SHARED, hSrcFile, 0);
     R_ASSERT3(data && data != MAP_FAILED, cFileName, xrDebug::ErrorToString(GetLastError()));

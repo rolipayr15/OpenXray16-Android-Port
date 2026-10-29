@@ -119,6 +119,69 @@ bool AndroidSafListDirectory(const char* relativePath, std::vector<AndroidSafEnt
     return true;
 }
 
+bool AndroidSafWalkTree(std::vector<AndroidSafTreeEntry>& entries)
+{
+    entries.clear();
+
+    JNIEnv* environment = nullptr;
+    jobject activity = nullptr;
+    jclass activityClass = nullptr;
+    if (!GetActivity(environment, activity, activityClass))
+        return false;
+
+    jmethodID method = environment->GetMethodID(activityClass, "walkGameDataTree", "()[Ljava/lang/String;");
+    if (!method || ClearPendingException(environment, "tree walk method lookup"))
+    {
+        environment->DeleteLocalRef(activityClass);
+        environment->DeleteLocalRef(activity);
+        return false;
+    }
+
+    auto result = static_cast<jobjectArray>(environment->CallObjectMethod(activity, method));
+    environment->DeleteLocalRef(activityClass);
+    environment->DeleteLocalRef(activity);
+    if (ClearPendingException(environment, "tree walk") || !result)
+        return false;
+
+    const jsize count = environment->GetArrayLength(result);
+    if (count % 4 != 0)
+    {
+        __android_log_print(ANDROID_LOG_ERROR, LogTag, "Malformed SAF tree result: %d fields", count);
+        environment->DeleteLocalRef(result);
+        return false;
+    }
+
+    entries.reserve(static_cast<size_t>(count / 4));
+    std::string fields[4];
+    for (jsize index = 0; index < count; index += 4)
+    {
+        for (jsize field = 0; field < 4; ++field)
+        {
+            fields[field].clear();
+            auto value = static_cast<jstring>(environment->GetObjectArrayElement(result, index + field));
+            if (!value)
+                continue;
+            if (const char* utf = environment->GetStringUTFChars(value, nullptr))
+            {
+                fields[field] = utf;
+                environment->ReleaseStringUTFChars(value, utf);
+            }
+            environment->DeleteLocalRef(value);
+        }
+        if (fields[3].empty())
+            continue;
+
+        AndroidSafTreeEntry entry;
+        entry.directory = fields[0] == "d";
+        entry.size = std::strtoll(fields[1].c_str(), nullptr, 10);
+        entry.modified = std::strtoll(fields[2].c_str(), nullptr, 10);
+        entry.path = std::move(fields[3]);
+        entries.push_back(std::move(entry));
+    }
+    environment->DeleteLocalRef(result);
+    return !ClearPendingException(environment, "tree walk result conversion");
+}
+
 int AndroidSafOpenFile(const char* relativePath)
 {
     JNIEnv* environment = nullptr;

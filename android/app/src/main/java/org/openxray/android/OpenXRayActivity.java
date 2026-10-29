@@ -2,6 +2,8 @@ package org.openxray.android;
 
 import android.content.Context;
 import android.database.Cursor;
+import android.os.Build;
+import android.os.Environment;
 import android.util.DisplayMetrics;
 import android.net.Uri;
 import android.os.Bundle;
@@ -18,9 +20,16 @@ import org.libsdl.app.SDLSurface;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 public final class OpenXRayActivity extends SDLActivity {
     public static final String EXTRA_GAME_DATA_URI = "org.openxray.android.GAME_DATA_URI";
@@ -31,6 +40,14 @@ public final class OpenXRayActivity extends SDLActivity {
     public static final String EXTRA_VIEW_DISTANCE = "org.openxray.android.VIEW_DISTANCE";
     public static final String EXTRA_MASTER_SERVER_HOST = "org.openxray.android.MASTER_SERVER_HOST";
     public static final String EXTRA_MASTER_SERVER_PORT = "org.openxray.android.MASTER_SERVER_PORT";
+    public static final String EXTRA_GAME_MODE = "org.openxray.android.GAME_MODE";
+
+    /** Directory names that never contain game data; skipping them keeps SAF walks short. */
+    private static final Set<String> SKIPPED_DIRECTORIES = new HashSet<>(Arrays.asList(
+        ".git", ".svn", ".hg", "$recycle.bin", "system volume information",
+        "android", "dcim", "download", "pictures", "movies", "music",
+        "alarms", "ringtones", "notifications", "podcasts"));
+    private static final int MAX_WALK_DEPTH = 14;
 
     private String gameDataUri = "";
     private String profileId = "default";
@@ -41,6 +58,9 @@ public final class OpenXRayActivity extends SDLActivity {
     private int viewDistance = 100;
     private String masterServerHost = "";
     private int masterServerPort = 28910;
+    private String gameMode = "auto";
+    /** Lower-case relative path -> document id, filled by {@link #walkGameDataTree()}. */
+    private final Map<String, String> documentIds = new HashMap<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -67,6 +87,9 @@ public final class OpenXRayActivity extends SDLActivity {
         int selectedMasterPort = getIntent().getIntExtra(EXTRA_MASTER_SERVER_PORT, 28910);
         if (selectedMasterPort >= 1 && selectedMasterPort <= 65535)
             masterServerPort = selectedMasterPort;
+        String selectedGameMode = getIntent().getStringExtra(EXTRA_GAME_MODE);
+        if (selectedGameMode != null && selectedGameMode.matches("auto|shoc|cs|cop|unlock"))
+            gameMode = selectedGameMode;
         File profileDirectory = new File(getFilesDir(), "profiles/" + profileId);
         if (!profileDirectory.exists())
             profileDirectory.mkdirs();
@@ -106,6 +129,8 @@ public final class OpenXRayActivity extends SDLActivity {
     protected String[] getArguments() {
         return new String[] {
             "--game-data-uri", gameDataUri,
+            "--game-data-path", directGameDataPath(this, gameDataUri),
+            "--game-mode", gameMode,
             "--app-files-path", appFilesPath,
             "--profile-id", profileId,
             "--profile-name", profileName,
@@ -156,6 +181,109 @@ public final class OpenXRayActivity extends SDLActivity {
             SDLActivity.onNativeTouch(deviceId, event.getPointerId(index), action,
                 event.getX(index) / width, event.getY(index) / height, pressure);
         }
+    }
+
+    /** True when the app may read shared storage through ordinary file paths. */
+    public static boolean hasDirectStorageAccess(Context context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+            return Environment.isExternalStorageManager();
+        return context.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+            == android.content.pm.PackageManager.PERMISSION_GRANTED;
+    }
+
+    /**
+     * Maps a tree URI from the external-storage provider to its filesystem path
+     * when direct access is granted and the directory is readable. Direct paths
+     * let the unmodified engine locator see loose files, mods and the game's own
+     * layout at native speed; anything else falls back to the SAF bridge.
+     */
+    public static String directGameDataPath(Context context, String treeUri) {
+        if (treeUri == null || treeUri.isEmpty() || !hasDirectStorageAccess(context))
+            return "";
+        final String documentId;
+        try {
+            Uri tree = Uri.parse(treeUri);
+            if (!"com.android.externalstorage.documents".equals(tree.getAuthority()))
+                return "";
+            documentId = DocumentsContract.getTreeDocumentId(tree);
+        } catch (IllegalArgumentException exception) {
+            return "";
+        }
+        int colon = documentId.indexOf(':');
+        if (colon <= 0)
+            return "";
+        String volume = documentId.substring(0, colon);
+        String relative = documentId.substring(colon + 1);
+        File base = "primary".equalsIgnoreCase(volume)
+            ? Environment.getExternalStorageDirectory() : new File("/storage/" + volume);
+        File directory = relative.isEmpty() ? base : new File(base, relative);
+        return directory.isDirectory() && directory.canRead() ? directory.getAbsolutePath() : "";
+    }
+
+    /**
+     * Walks the whole selected tree once and returns flat quadruples of
+     * type ("d"/"f"), size, modification time in seconds and the path relative
+     * to the tree root. One provider query is issued per directory, and every
+     * document id is cached so later opens need a single binder call.
+     */
+    public String[] walkGameDataTree() {
+        documentIds.clear();
+        if (gameDataUri.isEmpty())
+            return null;
+
+        final Uri tree;
+        final String rootId;
+        try {
+            tree = Uri.parse(gameDataUri);
+            rootId = DocumentsContract.getTreeDocumentId(tree);
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
+
+        String[] projection = {
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED
+        };
+        List<String> result = new ArrayList<>();
+        ArrayDeque<String[]> pending = new ArrayDeque<>();
+        pending.add(new String[] { rootId, "", "0" });
+        documentIds.put("", rootId);
+        while (!pending.isEmpty()) {
+            String[] directory = pending.poll();
+            String parentPath = directory[1];
+            int depth = Integer.parseInt(directory[2]);
+            Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, directory[0]);
+            try (Cursor cursor = getContentResolver().query(children, projection, null, null, null)) {
+                if (cursor == null)
+                    return null;
+                while (cursor.moveToNext()) {
+                    String id = cursor.getString(0);
+                    String name = cursor.getString(1);
+                    if (id == null || name == null || name.isEmpty() || name.indexOf('/') >= 0)
+                        continue;
+                    boolean isDirectory = DocumentsContract.Document.MIME_TYPE_DIR.equals(cursor.getString(2));
+                    String path = parentPath.isEmpty() ? name : parentPath + "/" + name;
+                    if (isDirectory) {
+                        if (depth >= MAX_WALK_DEPTH || SKIPPED_DIRECTORIES.contains(name.toLowerCase(Locale.ROOT)))
+                            continue;
+                        pending.add(new String[] { id, path, Integer.toString(depth + 1) });
+                    }
+                    documentIds.put(path.toLowerCase(Locale.ROOT), id);
+                    long size = cursor.isNull(3) ? -1 : cursor.getLong(3);
+                    long modified = cursor.isNull(4) ? 0 : cursor.getLong(4) / 1000;
+                    result.add(isDirectory ? "d" : "f");
+                    result.add(Long.toString(size));
+                    result.add(Long.toString(modified));
+                    result.add(path);
+                }
+            } catch (RuntimeException exception) {
+                return null;
+            }
+        }
+        return result.toArray(new String[0]);
     }
 
     /** Returns flat type/size/name triples, or null when the persisted tree cannot be read. */
@@ -212,7 +340,9 @@ public final class OpenXRayActivity extends SDLActivity {
      * descriptor to native code. Native code must close every non-negative result.
      */
     public int openGameDataFile(String relativePath) {
-        Uri document = resolveGameDataDocument(relativePath);
+        Uri document = cachedGameDataDocument(relativePath);
+        if (document == null)
+            document = resolveGameDataDocument(relativePath);
         if (document == null) {
             return -1;
         }
@@ -221,6 +351,19 @@ public final class OpenXRayActivity extends SDLActivity {
             return descriptor == null ? -1 : descriptor.detachFd();
         } catch (IOException | RuntimeException exception) {
             return -1;
+        }
+    }
+
+    private Uri cachedGameDataDocument(String relativePath) {
+        if (documentIds.isEmpty() || relativePath == null)
+            return null;
+        String id = documentIds.get(relativePath.replace('\\', '/').toLowerCase(Locale.ROOT));
+        if (id == null)
+            return null;
+        try {
+            return DocumentsContract.buildDocumentUriUsingTree(Uri.parse(gameDataUri), id);
+        } catch (IllegalArgumentException exception) {
+            return null;
         }
     }
 

@@ -63,6 +63,18 @@ The stage-2 Gradle host lives in `android/`. It compiles SDL2 from the pinned `E
 - The next Stage 6 blocker is explicit rather than hidden: the new `GEnv.Render` device bridge covers Vulkan lifecycle/presentation, but its model/resource methods are still stubs and `xrGameModule::initialize` plus `CGamePersistent` require live render-factory, UI-render and debug-render implementations. The desktop GL factory cannot run on the reference Mali device, so these interfaces must be backed by native Vulkan before the menu/level lifecycle is enabled. Loose `gamedata` overlays and `mods/*.xdb*` archive discovery also remain to be added after the base single-player archive path.
 - Universal game-data discovery (0.8.0): the host now recursively scans the SAF tree, detects SoC / Clear Sky / Call of Pripyat (and modded layouts via the game's own `fsgame.ltx`), mirrors every `.db`/`.xdb` archive while preserving its directory layout, and selects the matching `-shoc`/`-cs`/`-cop` flag. Encrypted `*.db.ntp` archives (ransomware damage) are detected and safely skipped. Renderer fixes land alongside: the world pipeline front-face is corrected (inside-out dynamic models) and `model_Delete` releases cached dynamic meshes. Loose `gamedata` overlays remain the next discovery milestone.
 
+## Universal game-data access
+
+The port targets every game OpenXRay supports and the mods built on them. No code path may assume one game's layout; the game is detected from the user's data, and the user can override the detection per launcher profile.
+
+- **Discovery** (`android/app/src/main/cpp/AndroidGameData.cpp`): the selected tree is walked once. The installation root is the directory of the shallowest `fsgame.ltx`, otherwise the parent of a `gamedata` folder, a root `gamedata.db*` archive or the `resources`/`levels` archive folders. The game's own `fsgame.ltx` is reused verbatim except for the writable aliases (`$app_data_root$`, `$logs$`, `$screenshots$`, `$game_saves$`, `$downloads$`), which move to app-private storage; a stock-equivalent `fsgame.ltx` is synthesized when the installation has none.
+- **Game mode**: `config\` (ShoC) versus `configs\` gives a first guess. After the locator mounted the data, the shipped levels decide between CoP (`zaton`/`jupiter`/`pripyat`), CS (`marsh`/`red_forest`/`limansk`) and ShoC (`l01_escape`/`l02_garbage`); mods that combine locations (Call of Chernobyl, Anomaly) resolve to CoP. Without any evidence no flag is passed and the engine default applies. The launcher's "Игра" setting forces `-shoc`, `-cs`, `-cop` or `-unlock_game_mode`.
+- **Direct mode** (preferred): with all-files access (`MANAGE_EXTERNAL_STORAGE` on Android 11+, `READ_EXTERNAL_STORAGE` before) the tree URI is mapped to its filesystem path and linked into the private root as `gameroot`. Every alias the game rooted at `$fs_root$` is rebased onto `$game_root$`, so the stock locator sees archives, loose `gamedata` files and mods at native speed.
+- **SAF mode** (fallback, no extra permission): Java walks the tree with one provider query per directory and caches every document id. Each file of the installation is registered with `xrCore` as a *virtual file* below the private root; the locator lists and opens virtual files like real ones (`xrAndroidOpenReadOnly`), and each open asks the provider for a fresh descriptor. Archives are validated for random access first. Nothing is copied.
+- **Letter case**: game data and mods come from case-insensitive Windows installs. On Android the locator keys its registry in lower case like on Windows (`xr_fs_strlwr`), and file opens, renames and deletes fall back to a case-insensitive lookup of the on-disk spelling.
+
+`misc/android/validate-gles-shaders.py` compiles every GL shader as GLSL ES 3.20 offline with the NDK's `glslc`, using the preamble and rewrite from `src/Layers/xrRenderGL/glShaderSourceES.cpp`. It is the gate for the OpenGL ES renderer track.
+
 The private fixture is not a substitute for game files. It exists only to test OpenXRay's filesystem code without copying any proprietary data into the source tree or APK.
 
 Android providers are allowed to return a pipe for exclusive read mode. X-Ray archives require random access, so the host rejects a descriptor unless `lseek` and positional reads succeed. A later compatibility fallback may copy only non-seekable providers into an app-private cache; it must never silently duplicate a full installation.
@@ -89,7 +101,9 @@ The script explicitly enables restore for legacy `packages.config` dependencies;
 - Native Vulkan is the primary renderer-bootstrap path. Desktop OpenGL through Mesa Zink is optional and may be selected only after the device passes the OpenGL 4.1 capability profile and the regular-APK Mesa/EGL path initializes successfully. A native GLES renderer remains a possible later compatibility track.
 - Native crashes must be symbolizable per ABI; release artifacts must retain unstripped symbols separately from packaged libraries.
 - The app must accept a user-selected data tree. Hard-coded shared-storage paths are forbidden because they break scoped storage and make device behavior vendor-dependent.
-- Writable engine state, caches, logs and generated compatibility files belong under the app-private directory. The user-selected SAF tree is treated as read-only commercial input.
+- Writable engine state, caches, logs and generated compatibility files belong under the app-private directory. The user-selected tree is treated as read-only commercial input in both direct and SAF mode.
+- The Android lifecycle is part of the renderer contract: losing the window surface (background, rotation, resize) rebuilds only the swapchain, never the device or uploaded resources, and audio mixing pauses while the activity is in the background.
+- Debug APKs compile engine code at `-O2` (assertions stay on); `-DOPENXRAY_ANDROID_OPTIMIZE_DEBUG=OFF` restores `-O0` for step debugging. Release APKs are stripped, keep full native symbols separately and are signed with the debug key unless a store configuration overrides it.
 
 ## Stage gates
 
@@ -98,7 +112,7 @@ The script explicitly enables restore for legacy `packages.config` dependencies;
 3. **Core portability:** Android platform layer, filesystem abstraction over the selected data tree, threading/timing/logging/dynamic-loading fixes, engine core linked into the APK.
 4. **Dependencies and scripting:** Android builds for LuaJIT/PUC Lua fallback, OpenAL Soft, Ogg/Vorbis/Theora, LZO, JPEG, physics and remaining third-party code.
 5. **Renderer bootstrap:** native Vulkan capability checks and swapchain, capability-gated Zink experiment, embedded shader/pipeline/cache paths and a persistent renderer lifecycle driven by the core host-frame loop.
-6. **Game execution:** native Vulkan implementations of the engine render interfaces, Shadow of Chernobyl resource/configuration compatibility, `xrGame` initialization, first engine-rendered frame, menu, level loading, new game, save/load, audio, input and scripted gameplay.
+6. **Game execution:** renderer implementations of the engine render interfaces, resource/configuration compatibility for ShoC, CS, CoP and mods built on them, `xrGame` initialization, first engine-rendered frame, menu, level loading, new game, save/load, audio, input and scripted gameplay.
 7. **Performance and ABI expansion:** thermal/memory profiling, ARMv7 constraints, device matrix, controls/UI scaling, packaging and upgrade tests.
 8. **Release gate:** licensing review, attribution, clean-room asset audit, user-facing copy/import documentation, reproducible signed release process.
 

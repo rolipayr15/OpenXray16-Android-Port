@@ -7,6 +7,7 @@
 
 #if defined(XR_PLATFORM_ANDROID)
 #include "Android/AndroidArchiveDescriptors.hpp"
+#include <unordered_set>
 #endif
 
 #if defined(XR_PLATFORM_WINDOWS)
@@ -28,6 +29,8 @@
 // Bionic only exports glob()/globfree() from API 28, while OpenXRay supports
 // Android API 26. The locator only needs a trailing '*' directory scan, so a
 // small opendir-based compatibility implementation avoids raising minSdk.
+// It also merges loose files the host registered from a read-only SAF tree,
+// which have no on-disk entry in the scanned directory.
 static int android_glob(pcstr pattern, glob_t* result)
 {
     std::string directory = pattern;
@@ -35,24 +38,43 @@ static int android_glob(pcstr pattern, glob_t* result)
         directory.pop_back();
 
     const std::string openPath = directory.empty() ? "." : directory;
-    DIR* handle = opendir(openPath.c_str());
-    if (!handle)
-        return GLOB_NOMATCH;
-
     std::vector<std::string> matches;
-    while (dirent* entry = readdir(handle))
+    if (DIR* handle = opendir(openPath.c_str()))
     {
-        // POSIX glob('*') does not return dot entries or hidden files.
-        if (entry->d_name[0] == '.')
-            continue;
+        while (dirent* entry = readdir(handle))
+        {
+            // POSIX glob('*') does not return dot entries or hidden files.
+            if (entry->d_name[0] == '.')
+                continue;
 
-        std::string fullPath = directory;
-        if (!fullPath.empty() && fullPath.back() != '/')
-            fullPath.push_back('/');
-        fullPath += entry->d_name;
-        matches.push_back(std::move(fullPath));
+            std::string fullPath = directory;
+            if (!fullPath.empty() && fullPath.back() != '/')
+                fullPath.push_back('/');
+            fullPath += entry->d_name;
+            matches.push_back(std::move(fullPath));
+        }
+        closedir(handle);
     }
-    closedir(handle);
+
+    std::vector<std::string> virtualChildren;
+    xrListAndroidVirtualDirectory(openPath.c_str(), virtualChildren);
+    if (!virtualChildren.empty())
+    {
+        // A real file shadows a virtual one with the same (case-folded) name.
+        std::unordered_set<std::string> existing;
+        for (const std::string& match : matches)
+        {
+            std::string folded = match;
+            std::transform(folded.begin(), folded.end(), folded.begin(),
+                [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+            existing.insert(std::move(folded));
+        }
+        for (std::string& child : virtualChildren)
+        {
+            if (existing.count(child) == 0)
+                matches.push_back(std::move(child));
+        }
+    }
 
     if (matches.empty())
         return GLOB_NOMATCH;
@@ -571,8 +593,10 @@ void CLocatorAPI::archive::open()
     // content provider, with a normal path fallback for private archives.
     hSrcFile = xrDuplicateAndroidArchiveDescriptor(conv_path);
     if (hSrcFile == -1)
-#   endif
+        hSrcFile = xrAndroidOpenReadOnly(conv_path);
+#   else
     hSrcFile = ::open(conv_path, O_RDONLY);
+#   endif
     R_ASSERT(hSrcFile != -1);
     R_ASSERT(fstat(hSrcFile, &file_info) == 0);
 #   ifdef XR_PLATFORM_APPLE
@@ -808,8 +832,13 @@ bool CLocatorAPI::Recurse(pcstr path)
         // do nothing
 #elif defined(XR_PLATFORM_POSIX)
         xr_strcpy(findData.name, globbuf.gl_pathv[handle - done]);
-        struct stat fi;
+        struct stat fi{};
+#   if defined(XR_PLATFORM_ANDROID)
+        if (stat(findData.name, &fi) != 0 && !xrStatAndroidVirtualPath(findData.name, fi))
+            fi.st_mode = 0;
+#   else
         stat(findData.name, &fi);
+#   endif
         findData.size = fi.st_size;
 #   ifdef XR_PLATFORM_APPLE
         findData.time_access = fi.st_atimespec.tv_sec;
@@ -1905,7 +1934,13 @@ void CLocatorAPI::file_rename(pcstr src, pcstr dest, bool overwrite)
         VerifyPath(dest);
         pstr conv_dest = xr_strdup(dest);
         convert_path_separators(conv_dest);
+#if defined(XR_PLATFORM_ANDROID)
+        // The registry name is lower-cased; rename the on-disk spelling.
+        std::string resolvedSource;
+        rename(xrAndroidResolvePathCase(src, resolvedSource) ? resolvedSource.c_str() : src, conv_dest);
+#else
         rename(src, conv_dest);
+#endif
         xr_free(conv_dest);
     }
 }

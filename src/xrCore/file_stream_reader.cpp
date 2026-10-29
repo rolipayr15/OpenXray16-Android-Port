@@ -4,6 +4,9 @@
 #if defined(XR_PLATFORM_POSIX)
 #include <fcntl.h>
 #endif
+#if defined(XR_PLATFORM_ANDROID)
+#include "Android/AndroidArchiveDescriptors.hpp"
+#endif
 
 void CFileStreamReader::construct(pcstr file_name, const size_t& window_size)
 {
@@ -23,7 +26,11 @@ void CFileStreamReader::construct(pcstr file_name, const size_t& window_size)
 #elif defined(XR_PLATFORM_POSIX)
     pstr conv_fn = xr_strdup(file_name);
     convert_path_separators(conv_fn);
+#   if defined(XR_PLATFORM_ANDROID)
+    m_file_handle = xrAndroidOpenReadOnly(conv_fn);
+#   else
     m_file_handle = ::open(conv_fn, O_RDONLY);
+#   endif
     xr_free(conv_fn);
     VERIFY(m_file_handle != -1);
     struct stat file_info;

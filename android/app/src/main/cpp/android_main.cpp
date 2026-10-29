@@ -8,6 +8,7 @@
 #include "xrCore/xr_ini.h"
 #include "xrScriptEngine/xrScriptEngine.hpp"
 #include "xrScriptEngine/script_space.hpp"
+#include "AndroidGameData.hpp"
 #include "AndroidGameModuleProbe.hpp"
 #include "AndroidSafBridge.hpp"
 #include "AndroidVulkanRenderDevice.hpp"
@@ -37,6 +38,7 @@
 #include <unordered_set>
 #include <vector>
 #include <jpeglib.h>
+#include <memory>
 #include <luabind/memory.hpp>
 #include <luajit.h>
 #include <ode/ode.h>
@@ -61,40 +63,6 @@ const char* FindArgument(int argc, char** argv, const char* name)
     return "";
 }
 
-// mkdir -p, safe for both absolute and relative paths. Returns false only when
-// a component cannot be created and does not already exist.
-bool EnsureDirectoryRecursive(const std::string& path)
-{
-    if (path.empty())
-        return true;
-
-    std::string current;
-    size_t start = 0;
-    if (path[0] == '/')
-    {
-        current = "/";
-        start = 1;
-    }
-
-    while (start <= path.size())
-    {
-        const size_t slash = path.find('/', start);
-        const size_t end = slash == std::string::npos ? path.size() : slash;
-        const std::string component = path.substr(start, end - start);
-        if (!component.empty())
-        {
-            current += component;
-            if (mkdir(current.c_str(), 0700) != 0 && errno != EEXIST)
-                return false;
-        }
-        if (slash == std::string::npos)
-            break;
-        current += '/';
-        start = slash + 1;
-    }
-    return true;
-}
-
 bool WriteFile(const std::string& path, const char* contents)
 {
     FILE* file = std::fopen(path.c_str(), "wb");
@@ -106,34 +74,12 @@ bool WriteFile(const std::string& path, const char* contents)
     return std::fclose(file) == 0 && written;
 }
 
-bool PrepareFilesystemFixture(const char* appFilesPath, const std::string& fsgameContent,
-    std::string& fsConfigPath)
-{
-    if (!appFilesPath || !appFilesPath[0])
-        return false;
-
-    const std::string root = std::string(appFilesPath) + "/xr-core-smoke";
-    if (!EnsureDirectoryRecursive(root) ||
-        !EnsureDirectoryRecursive(root + "/_appdata_") ||
-        !EnsureDirectoryRecursive(root + "/_appdata_/logs") ||
-        !EnsureDirectoryRecursive(root + "/_appdata_/savedgames") ||
-        !EnsureDirectoryRecursive(root + "/_appdata_/screenshots") ||
-        !EnsureDirectoryRecursive(root + "/gamedata"))
-    {
-        return false;
-    }
-
-    static constexpr char Marker[] = "openxray-android-vfs-smoke-v1\n";
-
-    fsConfigPath = root + "/fsgame.ltx";
-    return WriteFile(fsConfigPath, fsgameContent.c_str()) &&
-        WriteFile(root + "/gamedata/android_smoke.txt", Marker);
-}
-
+// The marker lives in writable app storage, which every mount mode shares;
+// $game_data$ may point into the user's (read-only) installation.
 bool VerifyFilesystemFixture()
 {
     static constexpr char Marker[] = "openxray-android-vfs-smoke-v1\n";
-    IReader* reader = FS.r_open("$game_data$", "android_smoke.txt");
+    IReader* reader = FS.r_open("$app_data_root$", "android_smoke.txt");
     if (!reader)
         return false;
 
@@ -291,598 +237,6 @@ bool VerifyRemainingSupportLibraries()
     return gameSpyWorks && imguiWorks;
 }
 
-// ---------------------------------------------------------------------------
-// Universal game-resource discovery.
-//
-// The launcher grants a read-only Storage Access Framework tree. The engine VFS
-// (CLocatorAPI) already mounts archives from the fsgame.ltx layout for all three
-// games and for mods that add their own $arch_dir* entries. The host's only job
-// is to walk that tree, find every archive and the game's own fsgame.ltx, mirror
-// them into app-private storage with descriptor-backed symlinks, and emit an
-// fsgame.ltx that matches the discovered layout.
-// ---------------------------------------------------------------------------
-
-enum class GameFlavor
-{
-    Unknown,
-    ShadowOfChernobyl,
-    ClearSky,
-    CallOfPripyat,
-};
-
-pcstr GameFlavorFlag(GameFlavor flavor)
-{
-    switch (flavor)
-    {
-    case GameFlavor::ClearSky: return "-cs";
-    case GameFlavor::CallOfPripyat: return "-cop";
-    case GameFlavor::ShadowOfChernobyl:
-    default: return "-shoc";
-    }
-}
-
-const char* GameFlavorName(GameFlavor flavor)
-{
-    switch (flavor)
-    {
-    case GameFlavor::ShadowOfChernobyl: return "SoC";
-    case GameFlavor::ClearSky: return "CS";
-    case GameFlavor::CallOfPripyat: return "CoP";
-    default: return "unknown";
-    }
-}
-
-struct SafDiscoveredFile
-{
-    std::string path;               // relative to the selected tree root, '/' separated
-    std::int64_t size = -1;
-    bool archive = false;
-    bool archiveNeedsRename = false; // ".db.ntp"/".xdb.ntp" suffix (usually ransomware-encrypted)
-    std::string archiveName;         // engine-visible basename (after optional rename)
-};
-
-std::string LowerName(std::string value)
-{
-    std::transform(value.begin(), value.end(), value.begin(),
-        [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
-    return value;
-}
-
-std::string BaseName(const std::string& path)
-{
-    const std::string::size_type slash = path.find_last_of('/');
-    return slash == std::string::npos ? path : path.substr(slash + 1);
-}
-
-std::string ParentDir(const std::string& path)
-{
-    const std::string::size_type slash = path.find_last_of('/');
-    return slash == std::string::npos ? std::string() : path.substr(0, slash);
-}
-
-std::string PathRelativeToRoot(const std::string& path, const std::string& root)
-{
-    if (root.empty())
-        return path;
-    if (path == root)
-        return std::string();
-    if (path.size() > root.size() && path.compare(0, root.size(), root) == 0 && path[root.size()] == '/')
-        return path.substr(root.size() + 1);
-    return std::string();
-}
-
-bool IsArchiveByExtension(const std::string& baseLower)
-{
-    const std::string::size_type dot = baseLower.find_last_of('.');
-    if (dot == std::string::npos)
-        return false;
-    const std::string extension = baseLower.substr(dot);
-    return extension.compare(0, 3, ".db") == 0 || extension.compare(0, 4, ".xdb") == 0;
-}
-
-// Files with a ".db.ntp"/".xdb.ntp" suffix are normally the originals left
-// behind by ransomware ("винлокер") after encryption — irrecoverable, and only
-// replaceable with clean copies. The engine only discovers *.db / *.xdb, so the
-// host must never feed these to it blindly. They are still detected here so a
-// genuinely intact archive that happens to carry the suffix can be mirrored
-// under its real name after the CFS header is verified.
-bool IsRepackArchiveName(const std::string& baseLower)
-{
-    static constexpr char DbNtp[] = ".db.ntp";
-    static constexpr char XdbNtp[] = ".xdb.ntp";
-    constexpr size_t DbNtpLength = sizeof(DbNtp) - 1;
-    constexpr size_t XdbNtpLength = sizeof(XdbNtp) - 1;
-    if (baseLower.size() > DbNtpLength &&
-        baseLower.compare(baseLower.size() - DbNtpLength, DbNtpLength, DbNtp) == 0)
-        return true;
-    return baseLower.size() > XdbNtpLength &&
-        baseLower.compare(baseLower.size() - XdbNtpLength, XdbNtpLength, XdbNtp) == 0;
-}
-
-bool IsFsgameName(const std::string& baseLower)
-{
-    return baseLower == "fsgame.ltx";
-}
-
-bool ShouldSkipDirectory(const std::string& baseLower)
-{
-    static const std::unordered_set<std::string> skip = {
-        ".git", ".svn", ".hg", "$recycle.bin", "system volume information",
-        "android", "dcim", "download", "pictures", "movies", "music",
-        "alarms", "ringtones", "notifications", "podcasts",
-    };
-    return skip.count(baseLower) != 0;
-}
-
-// Depth-first walk of the SAF tree. Returns false only when a directory in the
-// walk cannot be enumerated (i.e. the retained permission was revoked).
-bool AndroidSafWalkTree(std::vector<SafDiscoveredFile>& files)
-{
-    files.clear();
-    struct Pending
-    {
-        std::string path;
-        int depth;
-    };
-    std::vector<Pending> stack;
-    stack.push_back(Pending{"", 0});
-    constexpr int MaxDepth = 14;
-
-    while (!stack.empty())
-    {
-        Pending current = std::move(stack.back());
-        stack.pop_back();
-
-        std::vector<AndroidSafEntry> entries;
-        if (!AndroidSafListDirectory(current.path.c_str(), entries))
-            return false;
-
-        for (const AndroidSafEntry& entry : entries)
-        {
-            if (entry.name.empty())
-                continue;
-
-            const std::string baseLower = LowerName(entry.name);
-            if (entry.directory)
-            {
-                if (current.depth >= MaxDepth || ShouldSkipDirectory(baseLower))
-                    continue;
-                std::string child = current.path.empty() ? entry.name : current.path + "/" + entry.name;
-                stack.push_back(Pending{std::move(child), current.depth + 1});
-                continue;
-            }
-
-            SafDiscoveredFile file;
-            file.path = current.path.empty() ? entry.name : current.path + "/" + entry.name;
-            file.size = entry.size;
-
-            if (IsArchiveByExtension(baseLower))
-            {
-                file.archive = true;
-                file.archiveName = entry.name;
-            }
-            else if (IsRepackArchiveName(baseLower))
-            {
-                file.archive = true;
-                file.archiveNeedsRename = true;
-                std::string renamed = entry.name;
-                renamed.erase(renamed.size() - 4); // drop the trailing ".ntp"
-                file.archiveName = std::move(renamed);
-            }
-            files.push_back(std::move(file));
-        }
-    }
-    return true;
-}
-
-bool HasArchiveMagic(const std::array<unsigned char, 16>& header)
-{
-    // CFS_HeaderChunkID == 666 == 0x29A, little-endian.
-    return header[0] == 0x9A && header[1] == 0x02 && header[2] == 0x00 && header[3] == 0x00;
-}
-
-bool ReadSafFileText(const std::string& relativePath, std::string& output)
-{
-    output.clear();
-    const int descriptor = AndroidSafOpenFile(relativePath.c_str());
-    if (descriptor < 0)
-        return false;
-
-    const off_t size = lseek(descriptor, 0, SEEK_END);
-    if (size <= 0 || size > 4 * 1024 * 1024)
-    {
-        close(descriptor);
-        return false;
-    }
-    output.resize(static_cast<size_t>(size));
-    const ssize_t read = pread(descriptor, &output[0], static_cast<size_t>(size), 0);
-    close(descriptor);
-    return read == size;
-}
-
-// Extract the "add" field (4th item, 0-based index 3) from an fsgame line like
-// "$game_config$ = true|false|$game_data$|configs\". Returns "" when absent.
-std::string FsgameAddField(const std::string& content, const std::string& variable)
-{
-    std::istringstream stream(content);
-    std::string line;
-    const std::string needle = LowerName(variable);
-    while (std::getline(stream, line))
-    {
-        const std::string::size_type eq = line.find('=');
-        if (eq == std::string::npos)
-            continue;
-        std::string id = line.substr(0, eq);
-        id.erase(id.begin(), std::find_if(id.begin(), id.end(), [](unsigned char c) { return !std::isspace(c); }));
-        id.erase(std::find_if(id.rbegin(), id.rend(), [](unsigned char c) { return !std::isspace(c); }).base(), id.end());
-        if (LowerName(id) != needle)
-            continue;
-
-        const std::string value = line.substr(eq + 1);
-        std::vector<std::string> fields;
-        size_t start = 0;
-        while (start <= value.size())
-        {
-            const size_t bar = value.find('|', start);
-            fields.push_back(value.substr(start, (bar == std::string::npos ? value.size() : bar) - start));
-            if (bar == std::string::npos)
-                break;
-            start = bar + 1;
-        }
-        return fields.size() >= 4 ? fields[3] : std::string();
-    }
-    return std::string();
-}
-
-// Rewrite the writable-path lines so logs/saves/screenshots live in the
-// app-private mirror (the SAF tree is read-only). Every other line is kept
-// verbatim so mods that add custom $arch_dir* / $game_data$ entries keep working.
-bool RewriteFsgame(const std::string& source, std::string& output)
-{
-    std::istringstream stream(source);
-    std::string line;
-    output.clear();
-    bool rewritten = false;
-    while (std::getline(stream, line))
-    {
-        const std::string::size_type eq = line.find('=');
-        bool handled = false;
-        if (eq != std::string::npos)
-        {
-            std::string id = line.substr(0, eq);
-            id.erase(id.begin(), std::find_if(id.begin(), id.end(), [](unsigned char c) { return !std::isspace(c); }));
-            id.erase(std::find_if(id.rbegin(), id.rend(), [](unsigned char c) { return !std::isspace(c); }).base(), id.end());
-            const std::string lower = LowerName(id);
-            if (lower == "$app_data_root$")
-            {
-                output += "$app_data_root$ = true|false|$fs_root$|_appdata_\\\n";
-                rewritten = handled = true;
-            }
-            else if (lower == "$logs$")
-            {
-                output += "$logs$ = true|false|$app_data_root$|logs\\\n";
-                rewritten = handled = true;
-            }
-            else if (lower == "$screenshots$")
-            {
-                output += "$screenshots$ = true|false|$app_data_root$|screenshots\\\n";
-                rewritten = handled = true;
-            }
-            else if (lower == "$game_saves$")
-            {
-                output += "$game_saves$ = true|false|$app_data_root$|savedgames\\\n";
-                rewritten = handled = true;
-            }
-            else if (lower == "$downloads$")
-            {
-                output += "$downloads$ = false|false|$app_data_root$\n";
-                rewritten = handled = true;
-            }
-        }
-        if (!handled)
-        {
-            output += line;
-            output += '\n';
-        }
-    }
-    return rewritten;
-}
-
-std::string SynthesizeFsgame(GameFlavor flavor)
-{
-    const bool soc = flavor == GameFlavor::ShadowOfChernobyl;
-    const std::string config = soc ? "config" : "configs";
-    std::string result;
-    result += "; OpenXRay Android synthesized fsgame (no game fsgame.ltx found).\n";
-    result += "$app_data_root$ = true|false|$fs_root$|_appdata_\\\n";
-    result += "$arch_dir$ = false|false|$fs_root$\n";
-    result += "$game_arch_mp$ = false|false|$fs_root$|mp\\\n";
-    result += "$arch_dir_levels$ = false|false|$fs_root$|levels\\\n";
-    result += "$arch_dir_resources$ = false|false|$fs_root$|resources\\\n";
-    result += "$arch_dir_localization$ = false|false|$fs_root$|localization\\\n";
-    result += "$arch_dir_patches$ = false|true|$fs_root$|patches\\\n";
-    result += "$game_data$ = true|true|$fs_root$|gamedata\\\n";
-    result += "$game_ai$ = true|false|$game_data$|ai\\\n";
-    result += "$game_spawn$ = true|false|$game_data$|spawns\\\n";
-    result += "$game_levels$ = true|false|$game_data$|levels\\\n";
-    result += "$game_meshes$ = true|true|$game_data$|meshes\\|*.ogf;*.omf|Game Object files\n";
-    result += "$game_anims$ = true|true|$game_data$|anims\\|*.anm;*.anms|Animation files\n";
-    result += "$game_dm$ = true|true|$game_data$|meshes\\|*.dm|Detail Model files\n";
-    result += "$game_shaders$ = true|true|$game_data$|shaders\\\n";
-    result += "$game_sounds$ = true|true|$game_data$|sounds\\\n";
-    result += "$game_textures$ = true|true|$game_data$|textures\\\n";
-    result += "$game_config$ = true|false|$game_data$|" + config + "\\\n";
-    result += "$game_weathers$ = true|false|$game_config$|environment\\weathers\n";
-    result += "$game_weather_effects$ = true|false|$game_config$|environment\\weather_effects\n";
-    result += "$textures$ = true|true|$game_data$|textures\\\n";
-    result += "$level$ = false|false|$game_levels$\n";
-    result += "$game_scripts$ = true|false|$game_data$|scripts\\|*.script|Game script files\n";
-    result += "$logs$ = true|false|$app_data_root$|logs\\\n";
-    result += "$screenshots$ = true|false|$app_data_root$|screenshots\\\n";
-    result += "$game_saves$ = true|false|$app_data_root$|savedgames\\\n";
-    result += "$downloads$ = false|false|$app_data_root$\n";
-    return result;
-}
-
-struct GameLayout
-{
-    GameFlavor flavor = GameFlavor::Unknown;
-    std::string gameRoot;                        // relative dir under the selected tree
-    std::string fsgameRelativePath;              // game's own fsgame.ltx ("" if none)
-    std::string fsgameContent;                   // rewritten / synthesized fsgame text
-    std::vector<const SafDiscoveredFile*> archives; // archives under gameRoot
-};
-
-bool DetectGameLayout(const std::vector<SafDiscoveredFile>& files, GameLayout& layout)
-{
-    layout = GameLayout{};
-
-    // Find the game's own fsgame.ltx (shallowest wins on ambiguity).
-    std::string bestFsgame;
-    size_t bestDepth = static_cast<size_t>(-1);
-    for (const SafDiscoveredFile& file : files)
-    {
-        if (IsFsgameName(LowerName(BaseName(file.path))))
-        {
-            const size_t depth = static_cast<size_t>(std::count(file.path.begin(), file.path.end(), '/'));
-            if (depth < bestDepth)
-            {
-                bestDepth = depth;
-                bestFsgame = file.path;
-            }
-        }
-    }
-    if (!bestFsgame.empty())
-    {
-        layout.fsgameRelativePath = bestFsgame;
-        layout.gameRoot = ParentDir(bestFsgame);
-    }
-
-    // Infer the game root for the "no fsgame.ltx" case from the shallowest
-    // archive that implies a game root. This must happen before flavor
-    // classification so archive paths can be resolved relative to the root.
-    if (layout.gameRoot.empty())
-    {
-        for (const SafDiscoveredFile& file : files)
-        {
-            if (!file.archive)
-                continue;
-            const std::string baseLower = LowerName(BaseName(file.path));
-            if (baseLower.rfind("gamedata.db", 0) == 0)
-            {
-                layout.gameRoot = ParentDir(file.path);
-                break;
-            }
-            const std::string dirBase = LowerName(BaseName(ParentDir(file.path)));
-            if (dirBase == "resources" || dirBase == "levels")
-            {
-                layout.gameRoot = ParentDir(ParentDir(file.path));
-                break;
-            }
-        }
-    }
-
-    // Classify archives under the game root and infer the flavor.
-    bool hasRootGamedataDb = false;
-    bool hasResourcesArchives = false;
-    std::string copMarker; // "xefis_movies.db" / "resources.db3" / "resources.db4"
-    for (const SafDiscoveredFile& file : files)
-    {
-        if (!file.archive)
-            continue;
-        const std::string rel = PathRelativeToRoot(file.path, layout.gameRoot);
-        if (rel.empty())
-            continue;
-
-        const std::string baseLower = LowerName(BaseName(rel));
-        const std::string dirLower = LowerName(ParentDir(rel));
-
-        if (baseLower.rfind("gamedata.db", 0) == 0)
-            hasRootGamedataDb = true;
-        if (dirLower == "resources")
-            hasResourcesArchives = true;
-        if (baseLower == "xefis_movies.db" || baseLower == "resources.db3" || baseLower == "resources.db4")
-            copMarker = baseLower;
-    }
-
-    GameFlavor flavor = GameFlavor::Unknown;
-    if (!bestFsgame.empty())
-    {
-        std::string content;
-        if (ReadSafFileText(layout.fsgameRelativePath, content))
-        {
-            std::string add = LowerName(FsgameAddField(content, "$game_config$"));
-            add.erase(std::remove_if(add.begin(), add.end(),
-                [](unsigned char c) { return std::isspace(c) || c == '\\' || c == '/'; }), add.end());
-            if (add == "config")
-                flavor = GameFlavor::ShadowOfChernobyl;
-            else if (add == "configs")
-                flavor = GameFlavor::ClearSky; // refined below
-        }
-    }
-    if (flavor == GameFlavor::Unknown)
-    {
-        if (hasResourcesArchives || !copMarker.empty())
-            flavor = GameFlavor::ClearSky;
-        else if (hasRootGamedataDb)
-            flavor = GameFlavor::ShadowOfChernobyl;
-    }
-    if (flavor == GameFlavor::ClearSky && !copMarker.empty())
-        flavor = GameFlavor::CallOfPripyat;
-    layout.flavor = flavor;
-
-    // Collect archives under the game root.
-    for (const SafDiscoveredFile& file : files)
-    {
-        if (!file.archive)
-            continue;
-        if (PathRelativeToRoot(file.path, layout.gameRoot).empty())
-            continue;
-        layout.archives.push_back(&file);
-    }
-
-    // Build fsgame.ltx: reuse the game's own (rewritten) or synthesize.
-    if (!bestFsgame.empty() && ReadSafFileText(layout.fsgameRelativePath, layout.fsgameContent))
-    {
-        std::string rewritten;
-        if (RewriteFsgame(layout.fsgameContent, rewritten))
-            layout.fsgameContent = std::move(rewritten);
-    }
-    else
-    {
-        layout.fsgameContent = SynthesizeFsgame(layout.flavor);
-    }
-
-    return !layout.archives.empty() || layout.flavor != GameFlavor::Unknown;
-}
-
-void RemoveStaleMirrorSymlinks(const std::string& root)
-{
-    DIR* directory = opendir(root.c_str());
-    if (!directory)
-        return;
-
-    while (dirent* entry = readdir(directory))
-    {
-        if (std::strcmp(entry->d_name, ".") == 0 || std::strcmp(entry->d_name, "..") == 0)
-            continue;
-        const std::string path = root + "/" + entry->d_name;
-        struct stat status{};
-        if (lstat(path.c_str(), &status) != 0)
-            continue;
-        if (S_ISLNK(status.st_mode))
-            unlink(path.c_str());
-        else if (S_ISDIR(status.st_mode))
-            RemoveStaleMirrorSymlinks(path);
-    }
-    closedir(directory);
-}
-
-// Mirrors the discovered archives into the private mirror root, preserving
-// their layout relative to the game root, so CLocatorAPI can mount them exactly
-// as the game's own fsgame.ltx expects.
-class SafGameMirror
-{
-public:
-    SafGameMirror() = default;
-    SafGameMirror(const SafGameMirror&) = delete;
-    SafGameMirror& operator=(const SafGameMirror&) = delete;
-
-    ~SafGameMirror()
-    {
-        xrClearAndroidArchiveDescriptors();
-        for (const int descriptor : descriptors)
-            close(descriptor);
-    }
-
-    bool Initialize(const std::string& mirrorRoot, const GameLayout& layout)
-    {
-        xrClearAndroidArchiveDescriptors();
-        RemoveStaleMirrorSymlinks(mirrorRoot);
-
-        size_t mirrored = 0;
-        for (const SafDiscoveredFile* file : layout.archives)
-        {
-            const std::string relative = PathRelativeToRoot(file->path, layout.gameRoot);
-            if (relative.empty())
-                continue;
-
-            // Mirror under the engine-visible basename. A ".db.ntp" archive is
-            // mirrored as ".db" so CLocatorAPI can discover it after the CFS
-            // header is verified.
-            const std::string parent = ParentDir(relative);
-            const std::string mirrorRelative = parent.empty()
-                ? file->archiveName : parent + "/" + file->archiveName;
-
-            const int descriptor = AndroidSafOpenFile(file->path.c_str());
-            if (descriptor < 0)
-            {
-                __android_log_print(ANDROID_LOG_WARN, LogTag,
-                    "Cannot open resource: %s", file->path.c_str());
-                continue;
-            }
-
-            // Validate seekability and, for renamed files, the CFS header.
-            const off_t size = lseek(descriptor, 0, SEEK_END);
-            std::array<unsigned char, 16> header{};
-            const ssize_t bytesRead = size >= static_cast<off_t>(header.size())
-                ? pread(descriptor, header.data(), header.size(), 0)
-                : -1;
-            if (size < static_cast<off_t>(header.size()) || bytesRead != static_cast<ssize_t>(header.size()))
-            {
-                close(descriptor);
-                __android_log_print(ANDROID_LOG_WARN, LogTag,
-                    "Resource is not seekable: %s", file->path.c_str());
-                continue;
-            }
-            if (file->archiveNeedsRename && !HasArchiveMagic(header))
-            {
-                close(descriptor);
-                __android_log_print(ANDROID_LOG_WARN, LogTag,
-                    "Skipping encrypted/corrupted archive (no CFS header; likely ransomware-encrypted, replace with a clean copy): %s",
-                    file->path.c_str());
-                continue;
-            }
-
-            const std::string mirrorPath = mirrorRoot + "/" + mirrorRelative;
-            if (!EnsureDirectoryRecursive(ParentDir(mirrorPath)))
-            {
-                close(descriptor);
-                __android_log_print(ANDROID_LOG_WARN, LogTag,
-                    "Cannot create mirror directory for %s", mirrorRelative.c_str());
-                continue;
-            }
-
-            const std::string target = "/proc/self/fd/" + std::to_string(descriptor);
-            if (symlink(target.c_str(), mirrorPath.c_str()) != 0)
-            {
-                close(descriptor);
-                __android_log_print(ANDROID_LOG_WARN, LogTag,
-                    "Cannot symlink %s", relative.c_str());
-                continue;
-            }
-            if (!xrRegisterAndroidArchiveDescriptor(mirrorPath.c_str(), descriptor))
-            {
-                unlink(mirrorPath.c_str());
-                close(descriptor);
-                __android_log_print(ANDROID_LOG_WARN, LogTag,
-                    "Cannot register descriptor for %s", relative.c_str());
-                continue;
-            }
-            descriptors.push_back(descriptor);
-            ++mirrored;
-        }
-
-        __android_log_print(ANDROID_LOG_INFO, LogTag, "Mirrored %zu archives into private storage", mirrored);
-        return true;
-    }
-
-    size_t size() const { return descriptors.size(); }
-
-private:
-    std::vector<int> descriptors;
-};
-
 bool VerifyOptionalArchiveFixture()
 {
     static constexpr char Marker[] =
@@ -1016,6 +370,8 @@ bool VerifyGameConfigurationGraph()
 int main(int argc, char** argv)
 {
     const char* gameDataUri = FindArgument(argc, argv, "--game-data-uri");
+    const char* gameDataPath = FindArgument(argc, argv, "--game-data-path");
+    const char* gameMode = FindArgument(argc, argv, "--game-mode");
     const char* appFilesPath = FindArgument(argc, argv, "--app-files-path");
     const char* profileId = FindArgument(argc, argv, "--profile-id");
     const char* renderScale = FindArgument(argc, argv, "--render-scale");
@@ -1033,49 +389,44 @@ int main(int argc, char** argv)
     ConfigureGameSpyMasterServer(masterHost, masterPort);
     OutputDebugString("Starting OpenXRay Android SDL host");
     __android_log_print(ANDROID_LOG_INFO, LogTag, "Selected game-data tree: %s", gameDataUri);
+    if (gameDataPath[0])
+        __android_log_print(ANDROID_LOG_INFO, LogTag, "Direct game-data path: %s", gameDataPath);
     __android_log_print(ANDROID_LOG_INFO, LogTag, "Private engine files: %s", appFilesPath);
     __android_log_print(ANDROID_LOG_INFO, LogTag,
         "Launch profile: %s; render scale: %s%%; view distance: %.0f%%",
         profileId, renderScale, viewDistancePercent);
     if (IsGameSpyMasterServerConfigured())
-        __android_log_print(ANDROID_LOG_INFO, LogTag, "Custom SoC master: %s:%hu", masterHost, masterPort);
+        __android_log_print(ANDROID_LOG_INFO, LogTag, "Custom GameSpy master: %s:%hu", masterHost, masterPort);
     else
-        __android_log_write(ANDROID_LOG_INFO, LogTag, "Custom SoC master disabled; using compatibility backend");
+        __android_log_write(ANDROID_LOG_INFO, LogTag, "Custom GameSpy master disabled; using compatibility backend");
 
-    std::vector<AndroidSafEntry> gameDataRootEntries;
-    if (!AndroidSafListDirectory("", gameDataRootEntries))
+    // Prefer ordinary paths (all-files access): the stock locator then sees
+    // loose files, mods and the game's own layout at native speed. Otherwise
+    // read the selected Storage Access Framework tree through the bridge.
+    std::unique_ptr<GameDataSource> dataSource = gameDataPath && gameDataPath[0]
+        ? CreateDirectGameDataSource(gameDataPath) : CreateSafGameDataSource();
+    std::vector<GameDataFile> treeFiles;
+    if (!dataSource->Walk(treeFiles))
     {
-        __android_log_write(ANDROID_LOG_ERROR, LogTag, "Selected SAF game-data tree is not readable");
-        return 5;
-    }
-    __android_log_print(
-        ANDROID_LOG_INFO, LogTag, "Selected SAF game-data tree is readable (%zu root entries)",
-        gameDataRootEntries.size());
-
-    // Recursively discover archives and the game's own fsgame.ltx across the
-    // whole selected tree, so licensed SoC/CS/CoP installs, repacks and mods
-    // with custom layouts all work without a hardcoded path.
-    std::vector<SafDiscoveredFile> treeFiles;
-    if (!AndroidSafWalkTree(treeFiles))
-    {
-        __android_log_write(ANDROID_LOG_ERROR, LogTag, "Could not walk the selected game-data tree");
+        __android_log_print(ANDROID_LOG_ERROR, LogTag, "Could not walk the selected game-data tree (%s)",
+            dataSource->Name());
         return 20;
     }
-    __android_log_print(ANDROID_LOG_INFO, LogTag, "Walked selected tree: %zu files", treeFiles.size());
+    __android_log_print(ANDROID_LOG_INFO, LogTag, "Walked selected tree via %s: %zu entries",
+        dataSource->Name(), treeFiles.size());
 
     GameLayout layout;
-    const bool gameDetected = DetectGameLayout(treeFiles, layout);
-    if (gameDetected)
+    if (DetectGameLayout(*dataSource, treeFiles, ParseGameMode(gameMode), layout))
     {
         __android_log_print(ANDROID_LOG_INFO, LogTag,
-            "Detected game: %s, root=\"%s\", archives=%zu, fsgame=\"%s\"",
-            GameFlavorName(layout.flavor), layout.gameRoot.c_str(),
-            layout.archives.size(), layout.fsgameRelativePath.c_str());
+            "Detected installation: root=\"%s\", fsgame=\"%s\", archives=%zu, loose files=%zu, mode=%s%s",
+            layout.gameRoot.c_str(), layout.fsgameRelativePath.c_str(), layout.archiveCount,
+            layout.looseFileCount, GameFlavorName(layout.flavor), layout.flavorForced ? " (forced)" : "");
     }
     else
     {
         __android_log_write(ANDROID_LOG_WARN, LogTag,
-            "No recognizable game layout found; continuing in resource-free host mode");
+            "No X-Ray installation found in the selected tree; continuing in resource-free host mode");
     }
 
     const int coreTestResult = xrCoreAndroidSmokeTest();
@@ -1133,27 +484,34 @@ int main(int argc, char** argv)
     __android_log_print(ANDROID_LOG_INFO, LogTag,
         "xrGame Android runtime link probe passed (game_PlayerState=%u bytes)", playerStateSize);
 
+    // All engine state lives below this app-private root; the installation
+    // itself is only ever read.
+    const std::string privateRoot = std::string(appFilesPath) + "/xr-core-smoke";
+    GameDataMount gameData;
     std::string fixtureConfig;
-    const std::string& fsgame = layout.fsgameContent.empty()
-        ? SynthesizeFsgame(GameFlavor::ShadowOfChernobyl) : layout.fsgameContent;
-    if (!PrepareFilesystemFixture(appFilesPath, fsgame, fixtureConfig))
+    if (!gameData.Mount(*dataSource, treeFiles, layout, privateRoot, fixtureConfig) ||
+        !WriteFile(privateRoot + "/_appdata_/android_smoke.txt", "openxray-android-vfs-smoke-v1\n"))
     {
-        __android_log_write(ANDROID_LOG_ERROR, LogTag, "Could not prepare private xrCore filesystem fixture");
+        __android_log_write(ANDROID_LOG_ERROR, LogTag, "Could not prepare the private engine root");
         SDL_Quit();
         return 3;
     }
-
-    const std::string fixtureRoot = std::string(appFilesPath) + "/xr-core-smoke";
-    SafGameMirror archiveMirror;
-    archiveMirror.Initialize(fixtureRoot, layout);
-    __android_log_print(
-        ANDROID_LOG_INFO, LogTag, "Prepared %zu descriptor-backed SAF archives", archiveMirror.size());
 
     // Exercise the real locator on an engine-owned fixture. Archives from the
     // selected read-only SAF tree are exposed through borrowed descriptors;
     // writable state stays in the app-private directory.
     const std::string coreCommandLine = std::string(GameFlavorFlag(layout.flavor)) + " -nolog";
     Core.Initialize("OpenXRay Android", coreCommandLine.c_str(), true, fixtureConfig.c_str());
+    if (layout.detected && !layout.flavorForced)
+    {
+        const GameFlavor refined = RefineGameFlavorFromVfs(layout.flavor);
+        if (refined != layout.flavor)
+        {
+            __android_log_print(ANDROID_LOG_INFO, LogTag, "Game mode refined from shipped levels: %s",
+                GameFlavorName(refined));
+            layout.flavor = refined;
+        }
+    }
     if (!VerifyFilesystemFixture())
     {
         __android_log_write(ANDROID_LOG_ERROR, LogTag, "xrCore private filesystem smoke test failed");
@@ -1169,12 +527,13 @@ int main(int argc, char** argv)
         return 7;
     }
 
-    // A single archive is the redistributable fixture, not a full install.
-    const bool hasArchives = archiveMirror.size() > 1;
-    if (archiveMirror.size() == 1)
+    // Unpacked installations have no archives at all, so the decision to run
+    // the game rests on the engine configuration being reachable.
+    const bool hasArchives = layout.detected && FS.exist("$game_config$", "system.ltx");
+    if (layout.detected && !hasArchives)
     {
         __android_log_write(ANDROID_LOG_WARN, LogTag,
-            "Only one archive found; treating it as an incomplete installation");
+            "Installation has no reachable system.ltx; treating it as incomplete");
     }
     if (hasArchives && !VerifyGameArchiveResource())
     {
@@ -1209,7 +568,7 @@ int main(int argc, char** argv)
         SDL_Quit();
 
         std::string commandLine = std::string(GameFlavorFlag(layout.flavor));
-        commandLine += " -nolog -nosplash -fsltx ";
+        commandLine += " -nosplash -fsltx ";
         commandLine += fixtureConfig;
         if (engineArguments && engineArguments[0])
         {

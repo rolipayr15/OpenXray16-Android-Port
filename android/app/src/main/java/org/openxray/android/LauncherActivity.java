@@ -13,7 +13,9 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.Icon;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
@@ -39,6 +41,7 @@ public final class LauncherActivity extends Activity {
     public static final String EXTRA_PROFILE_ID = "org.openxray.android.PROFILE_ID";
 
     private static final int SELECT_GAME_DATA_REQUEST = 1001;
+    private static final int STORAGE_PERMISSION_REQUEST = 1002;
     private static final String PREFERENCES = "openxray_launcher";
     private static final String LEGACY_GAME_DATA_URI = "game_data_uri";
     private static final String PROFILE_IDS = "profile_ids";
@@ -48,6 +51,11 @@ public final class LauncherActivity extends Activity {
     private static final int[] RENDER_SCALES = {100, 80, 67, 50};
     private static final String[] RENDER_SCALE_LABELS = {
         "Исходное Качество (100%)", "Высоко (80%)", "Баланс (66%)", "Производительность (50%)"
+    };
+    private static final String[] GAME_MODES = {"auto", "shoc", "cs", "cop", "unlock"};
+    private static final String[] GAME_MODE_LABELS = {
+        "Определить автоматически", "Тень Чернобыля", "Чистое Небо", "Зов Припяти",
+        "Свободный режим (смешанные моды)"
     };
     private static final int[] VIEW_DISTANCES = {100, 80, 60, 40};
     private static final String[] VIEW_DISTANCE_LABELS = {
@@ -64,6 +72,9 @@ public final class LauncherActivity extends Activity {
     private EditText masterServerPort;
     private Spinner resolutionSpinner;
     private Spinner viewDistanceSpinner;
+    private Spinner gameModeSpinner;
+    private TextView storageAccessState;
+    private Button storageAccessButton;
     private Button launchButton;
     private Button deleteButton;
     private Profile activeProfile;
@@ -78,6 +89,7 @@ public final class LauncherActivity extends Activity {
         int masterPort;
         int renderScale;
         int viewDistance;
+        String gameMode;
     }
 
     @Override
@@ -151,6 +163,24 @@ public final class LauncherActivity extends Activity {
         Button selectDirectory = button("Выбрать каталог ресурсов", false);
         selectDirectory.setOnClickListener(view -> selectGameDataDirectory());
         profileCard.addView(selectDirectory, matchWidthWithTopMargin(8));
+        storageAccessState = label("", 12, Color.rgb(130, 148, 134), false);
+        storageAccessState.setPadding(0, dp(7), 0, 0);
+        profileCard.addView(storageAccessState, matchWidth());
+        storageAccessButton = button("Разрешить прямой доступ к файлам", false);
+        storageAccessButton.setOnClickListener(view -> requestDirectStorageAccess());
+        profileCard.addView(storageAccessButton, matchWidthWithTopMargin(8));
+
+        profileCard.addView(fieldLabel("Игра"), matchWidthWithTopMargin(16));
+        gameModeSpinner = new Spinner(this);
+        gameModeSpinner.setAdapter(new ArrayAdapter<>(this,
+            android.R.layout.simple_spinner_dropdown_item, GAME_MODE_LABELS));
+        gameModeSpinner.setBackgroundTintList(ColorStateList.valueOf(Color.rgb(103, 145, 111)));
+        profileCard.addView(gameModeSpinner, matchWidth());
+        TextView gameModeHint = label(
+            "Автоопределение читает fsgame.ltx и список уровней установки",
+            12, Color.rgb(130, 148, 134), false);
+        gameModeHint.setPadding(0, dp(7), 0, 0);
+        profileCard.addView(gameModeHint, matchWidth());
 
         profileCard.addView(fieldLabel("Внутреннее разрешение"), matchWidthWithTopMargin(16));
         resolutionSpinner = new Spinner(this);
@@ -176,7 +206,7 @@ public final class LauncherActivity extends Activity {
         viewDistanceHint.setPadding(0, dp(7), 0, 0);
         profileCard.addView(viewDistanceHint, matchWidth());
 
-        profileCard.addView(fieldLabel("Мастер-сервер Shadow of Chernobyl"), matchWidthWithTopMargin(16));
+        profileCard.addView(fieldLabel("Мастер-сервер GameSpy"), matchWidthWithTopMargin(16));
         masterServerHost = edit("IP или домен (пусто — стандартный сервис)");
         profileCard.addView(masterServerHost, matchWidth());
         masterServerPort = edit("Порт");
@@ -235,6 +265,7 @@ public final class LauncherActivity extends Activity {
             profile.masterPort = DEFAULT_MASTER_PORT;
             profile.renderScale = 67;
             profile.viewDistance = 80;
+            profile.gameMode = "auto";
             profiles.add(profile);
             saveProfile(profile);
             saveProfileIds();
@@ -268,6 +299,7 @@ public final class LauncherActivity extends Activity {
         profile.masterPort = preferences.getInt(prefix + "master_port", DEFAULT_MASTER_PORT);
         profile.renderScale = preferences.getInt(prefix + "scale", 67);
         profile.viewDistance = preferences.getInt(prefix + "distance", 80);
+        profile.gameMode = preferences.getString(prefix + "mode", "auto");
         return profile;
     }
 
@@ -279,7 +311,8 @@ public final class LauncherActivity extends Activity {
             .putString(prefix + "master_host", profile.masterHost)
             .putInt(prefix + "master_port", profile.masterPort)
             .putInt(prefix + "scale", profile.renderScale)
-            .putInt(prefix + "distance", profile.viewDistance).apply();
+            .putInt(prefix + "distance", profile.viewDistance)
+            .putString(prefix + "mode", profile.gameMode).apply();
     }
 
     private void saveProfileIds() {
@@ -320,7 +353,9 @@ public final class LauncherActivity extends Activity {
         selectedDirectory.setText(profile.gameDataUri.isEmpty() ? "Каталог не выбран" : readableUri(profile.gameDataUri));
         resolutionSpinner.setSelection(scaleIndex(profile.renderScale));
         viewDistanceSpinner.setSelection(viewDistanceIndex(profile.viewDistance));
+        gameModeSpinner.setSelection(gameModeIndex(profile.gameMode));
         launchButton.setEnabled(hasPersistedReadPermission(profile.gameDataUri));
+        updateStorageAccessState();
         deleteButton.setEnabled(profiles.size() > 1);
     }
 
@@ -357,6 +392,7 @@ public final class LauncherActivity extends Activity {
         activeProfile.masterPort = masterPort;
         activeProfile.renderScale = RENDER_SCALES[resolutionSpinner.getSelectedItemPosition()];
         activeProfile.viewDistance = VIEW_DISTANCES[viewDistanceSpinner.getSelectedItemPosition()];
+        activeProfile.gameMode = GAME_MODES[gameModeSpinner.getSelectedItemPosition()];
         saveProfile(activeProfile);
         saveProfileIds();
         return true;
@@ -373,6 +409,7 @@ public final class LauncherActivity extends Activity {
         profile.masterPort = copyCurrent && activeProfile != null ? activeProfile.masterPort : DEFAULT_MASTER_PORT;
         profile.renderScale = copyCurrent && activeProfile != null ? activeProfile.renderScale : 67;
         profile.viewDistance = copyCurrent && activeProfile != null ? activeProfile.viewDistance : 80;
+        profile.gameMode = copyCurrent && activeProfile != null ? activeProfile.gameMode : "auto";
         profiles.add(profile);
         saveProfile(profile);
         saveProfileIds();
@@ -394,7 +431,7 @@ public final class LauncherActivity extends Activity {
         String prefix = PROFILE_PREFIX + activeProfile.id + ".";
         preferences.edit().remove(prefix + "name").remove(prefix + "uri")
             .remove(prefix + "args").remove(prefix + "master_host").remove(prefix + "master_port")
-            .remove(prefix + "scale").remove(prefix + "distance").apply();
+            .remove(prefix + "scale").remove(prefix + "distance").remove(prefix + "mode").apply();
         profiles.remove(activeProfile);
         saveProfileIds();
         refreshProfileSpinner(profiles.get(0).id);
@@ -449,6 +486,7 @@ public final class LauncherActivity extends Activity {
         intent.putExtra(OpenXRayActivity.EXTRA_MASTER_SERVER_PORT, profile.masterPort);
         intent.putExtra(OpenXRayActivity.EXTRA_RENDER_SCALE, profile.renderScale);
         intent.putExtra(OpenXRayActivity.EXTRA_VIEW_DISTANCE, profile.viewDistance);
+        intent.putExtra(OpenXRayActivity.EXTRA_GAME_MODE, profile.gameMode);
         startActivity(intent);
         if (fromShortcut)
             finish();
@@ -492,6 +530,56 @@ public final class LauncherActivity extends Activity {
             if (RENDER_SCALES[index] == value)
                 return index;
         return 2;
+    }
+
+    private int gameModeIndex(String value) {
+        for (int index = 0; index < GAME_MODES.length; ++index)
+            if (GAME_MODES[index].equals(value))
+                return index;
+        return 0;
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (storageAccessState != null)
+            updateStorageAccessState();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == STORAGE_PERMISSION_REQUEST)
+            updateStorageAccessState();
+    }
+
+    /** Direct paths are optional: they unlock loose files at native speed; SAF keeps working without them. */
+    private void requestDirectStorageAccess() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                Uri.parse("package:" + getPackageName()));
+            try {
+                startActivity(intent);
+            } catch (RuntimeException exception) {
+                startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+            }
+        } else {
+            requestPermissions(new String[] { android.Manifest.permission.READ_EXTERNAL_STORAGE },
+                STORAGE_PERMISSION_REQUEST);
+        }
+    }
+
+    private void updateStorageAccessState() {
+        boolean granted = OpenXRayActivity.hasDirectStorageAccess(this);
+        boolean direct = activeProfile != null &&
+            !OpenXRayActivity.directGameDataPath(this, activeProfile.gameDataUri).isEmpty();
+        if (direct)
+            storageAccessState.setText("Режим доступа: прямой (быстрый, моды и распакованные файлы)");
+        else if (granted)
+            storageAccessState.setText("Режим доступа: SAF (каталог не во внутренней памяти или на SD-карте)");
+        else
+            storageAccessState.setText("Режим доступа: SAF. Прямой доступ ускоряет загрузку и чтение модов");
+        storageAccessButton.setVisibility(granted ? View.GONE : View.VISIBLE);
     }
 
     private int viewDistanceIndex(int value) {

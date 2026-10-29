@@ -428,7 +428,9 @@ decltype(auto) do_nothing(const T& obj)
     return obj;
 }
 
+#if !defined(XR_PLATFORM_CUSTOM_FS_CASE)
 #define xr_fs_strlwr(str) do_nothing(str)
+#endif
 #define xr_fs_nostrlwr(str) xr_strlwr(str)
 
 /// For backward compability of FS, for real filesystem delimiter set to back
@@ -442,6 +444,7 @@ inline void convert_path_separators(char * path)
     while (char* sep = strchr(path, '\\')) *sep = '/';
 }
 
+#if !defined(XR_PLATFORM_CUSTOM_FS_CASE)
 inline int xr_unlink(const char *path)
 {
     char* conv_fn = strdup(path);
@@ -450,6 +453,7 @@ inline int xr_unlink(const char *path)
     free(conv_fn);
     return result;
 }
+#endif
 
 inline tm* localtime_safe(const time_t *time, struct tm* result){ return localtime_r(time, result); }
 

@@ -321,6 +321,8 @@ endforeach()
 
 add_library(main SHARED
     android_main.cpp
+    AndroidGameData.cpp
+    AndroidGameData.hpp
     AndroidSafBridge.cpp
     AndroidSafBridge.hpp
     AndroidGameModuleProbe.hpp
