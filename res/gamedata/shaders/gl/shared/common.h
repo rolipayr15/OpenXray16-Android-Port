@@ -6,6 +6,24 @@
 #ifndef SHARED_COMMON_H
 #define SHARED_COMMON_H
 
+// Desktop GLSL evaluates an undefined macro in #if as 0; GLSL ES rejects it.
+// The engine defines these only when the matching option is enabled.
+#ifndef SUN_QUALITY
+#define SUN_QUALITY 0
+#endif
+#ifndef SSR_QUALITY
+#define SSR_QUALITY 0
+#endif
+#ifndef SSAO_QUALITY
+#define SSAO_QUALITY 0
+#endif
+#ifndef MSAA_SAMPLES
+#define MSAA_SAMPLES 0
+#endif
+#ifndef SSAO_OPT_DATA
+#define SSAO_OPT_DATA 0
+#endif
+
 #define half        float
 #define half2       vec2
 #define half3       vec3
@@ -41,7 +59,7 @@ void	sincos(float x, out float s, out float c) { s = sin(x); c = cos(x); }
 #define lerp        mix
 #define frac        fract
 #define saturate(a) clamp(a, 0.0, 1.0)
-#define clip(x)		if (x < 0) discard
+#define clip(x)		if ((x) < 0.0) discard
 #define tex2D		texture
 #define tex2Dproj	textureProj
 #define tex2Dlod(s,t)	textureLod(s,t.xy,t.w)

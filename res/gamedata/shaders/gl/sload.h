@@ -155,7 +155,7 @@ surface_bumped sload_i( p_bumped I)
 	S.normal			+= NDetail.wzy + NDetailX.xyz - 1.0; //	(Nu.wzyx - 0.5) + (E-0.5)
 
 	float4 detail		= tex2D( s_detail, I.tcdbump);
-	S.base.rgb			= S.base.rgb * detail.rgb * 2;
+	S.base.rgb			= S.base.rgb * detail.rgb * 2.0;
 
 //	S.base.rgb			= float3(1,0,0);
 #else        //	USE_TDETAIL_BUMP
@@ -203,7 +203,7 @@ surface_bumped sload_i( p_bumped I, float2 pixeloffset )
 	S.normal			+= NDetail.wzy + NDetailX.xyz - 1.0; //	(Nu.wzyx - 0.5) + (E-0.5)
 
 	float4 detail		= tex2D( s_detail, I.tcdbump);
-	S.base.rgb			= S.base.rgb * detail.rgb * 2;
+	S.base.rgb			= S.base.rgb * detail.rgb * 2.0;
 
 //	S.base.rgb			= float3(1,0,0);
 #else        //	USE_TDETAIL_BUMP
