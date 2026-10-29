@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="misc/media/OpenXraycover.png" alt="OpenXRay" width="760" />
+  <img src="misc/media/OpenXRayCover.png" alt="OpenXRay" width="760" />
 
   # OpenXRdroid16 — Android Port of OpenXray16
  
