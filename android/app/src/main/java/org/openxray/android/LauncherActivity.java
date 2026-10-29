@@ -103,7 +103,7 @@ public final class LauncherActivity extends Activity {
         content.setPadding(dp(20), dp(22), dp(20), dp(28));
         content.setBackgroundColor(Color.rgb(9, 14, 11));
 
-        content.addView(label("v0.7.1", 12, Color.rgb(127, 181, 135), true), matchWidth());
+        content.addView(label("v0.8.0", 12, Color.rgb(127, 181, 135), true), matchWidth());
         TextView title = label("OpenXRdroid16", 31, Color.rgb(238, 244, 239), true);
         title.setPadding(0, dp(4), 0, 0);
         content.addView(title, matchWidth());

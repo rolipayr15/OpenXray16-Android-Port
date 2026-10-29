@@ -12,6 +12,9 @@
 [Bb]uild*/
 local.properties
 
+# Local game data provided for testing (proprietary; never commit)
+gamefiles/
+
 # User-specific files
 *.user
 *.user.props

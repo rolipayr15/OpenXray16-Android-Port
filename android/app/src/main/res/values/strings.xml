@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">OpenXRdroid16</string>
     <string name="launcher_title">OpenXRdroid16</string>
-    <string name="launcher_description">Version: 0.6.1 alpha -- first public release(Портирование в процессе, баги\вылеты возможны (И скорее всего будут, простите). В случае вылета снимайте adb logcat и шлите мне в QMS (4pda: BardOwOeSaLo/r15)</string>
+    <string name="launcher_description">Version: 0.8.0 alpha -- SoC/Clear Sky/Call of Pripyat + mods(Портирование в процессе, баги\вылеты возможны (И скорее всего будут, простите). В случае вылета снимайте adb logcat и шлите мне в QMS (4pda: BardOwOeSaLo/r15)</string>
     <string name="no_game_data_selected">No game-data directory selected. - Игровые ресурсы не выбраны.</string>
     <string name="selected_game_data">Selected directory \ Выбрана директория:\n%1$s</string>
     <string name="select_game_data">Select game data directory \ Выберите директорию игры.</string>
