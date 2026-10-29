@@ -3,6 +3,17 @@ plugins {
 }
 
 def repositoryRoot = rootProject.projectDir.parentFile
+// Engine-owned (GPL) resources the native renderer needs at runtime. Game data
+// is never packaged; see doc/procedure/android-port.md.
+def engineAssetsDir = layout.buildDirectory.dir('generated/openxray-assets')
+
+def stageEngineResources = tasks.register('stageEngineResources', Sync) {
+    from(new File(repositoryRoot, 'res/gamedata/shaders/gl')) {
+        into 'openxray/gamedata/shaders/gl'
+    }
+    into engineAssetsDir
+}
+tasks.named('preBuild') { dependsOn stageEngineResources }
 
 android {
     namespace = 'org.openxray.android'
@@ -58,10 +69,14 @@ android {
     sourceSets {
         main {
             java.srcDir new File(repositoryRoot, 'Externals/SDL2/android-project/app/src/main/java')
+            assets.srcDir engineAssetsDir
         }
     }
 
     lint {
         baseline = file('lint-baseline.xml')
+        // lintVital cannot serialize the external SDL java source directory
+        // against the baseline (AGP 8.13); CI runs the full lintDebug instead.
+        checkReleaseBuilds = false
     }
 }

@@ -41,6 +41,9 @@ public final class OpenXRayActivity extends SDLActivity {
     public static final String EXTRA_MASTER_SERVER_HOST = "org.openxray.android.MASTER_SERVER_HOST";
     public static final String EXTRA_MASTER_SERVER_PORT = "org.openxray.android.MASTER_SERVER_PORT";
     public static final String EXTRA_GAME_MODE = "org.openxray.android.GAME_MODE";
+    public static final String EXTRA_RENDERER = "org.openxray.android.RENDERER";
+    /** Asset tree packaged by the stageEngineResources Gradle task. */
+    private static final String ENGINE_ASSETS = "openxray";
 
     /** Directory names that never contain game data; skipping them keeps SAF walks short. */
     private static final Set<String> SKIPPED_DIRECTORIES = new HashSet<>(Arrays.asList(
@@ -59,6 +62,8 @@ public final class OpenXRayActivity extends SDLActivity {
     private String masterServerHost = "";
     private int masterServerPort = 28910;
     private String gameMode = "auto";
+    private String renderer = "vulkan";
+    private String engineResourcesPath = "";
     /** Lower-case relative path -> document id, filled by {@link #walkGameDataTree()}. */
     private final Map<String, String> documentIds = new HashMap<>();
 
@@ -90,6 +95,10 @@ public final class OpenXRayActivity extends SDLActivity {
         String selectedGameMode = getIntent().getStringExtra(EXTRA_GAME_MODE);
         if (selectedGameMode != null && selectedGameMode.matches("auto|shoc|cs|cop|unlock"))
             gameMode = selectedGameMode;
+        String selectedRenderer = getIntent().getStringExtra(EXTRA_RENDERER);
+        if ("gles".equals(selectedRenderer))
+            renderer = selectedRenderer;
+        engineResourcesPath = unpackEngineResources();
         File profileDirectory = new File(getFilesDir(), "profiles/" + profileId);
         if (!profileDirectory.exists())
             profileDirectory.mkdirs();
@@ -131,6 +140,8 @@ public final class OpenXRayActivity extends SDLActivity {
             "--game-data-uri", gameDataUri,
             "--game-data-path", directGameDataPath(this, gameDataUri),
             "--game-mode", gameMode,
+            "--renderer", renderer,
+            "--engine-resources", engineResourcesPath,
             "--app-files-path", appFilesPath,
             "--profile-id", profileId,
             "--profile-name", profileName,
@@ -181,6 +192,63 @@ public final class OpenXRayActivity extends SDLActivity {
             SDLActivity.onNativeTouch(deviceId, event.getPointerId(index), action,
                 event.getX(index) / width, event.getY(index) / height, pressure);
         }
+    }
+
+    /**
+     * Copies the engine-owned resources (OpenXRay's GL shaders) from the APK
+     * into app storage once per installed build, so the native locator can
+     * read them as ordinary files. Returns the tree root or "" on failure.
+     */
+    private String unpackEngineResources() {
+        File root = new File(getFilesDir(), "engine-resources");
+        File stamp = new File(root, ".stamp");
+        String build;
+        try {
+            build = Long.toString(getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime);
+        } catch (android.content.pm.PackageManager.NameNotFoundException exception) {
+            build = "unknown";
+        }
+        try {
+            if (stamp.isFile() && build.equals(new String(java.nio.file.Files.readAllBytes(stamp.toPath()),
+                    java.nio.charset.StandardCharsets.UTF_8)))
+                return root.getAbsolutePath();
+            deleteRecursively(root);
+            copyAssetTree(ENGINE_ASSETS, root);
+            java.nio.file.Files.write(stamp.toPath(), build.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return root.getAbsolutePath();
+        } catch (IOException exception) {
+            android.util.Log.e("OpenXRay", "Could not unpack engine resources", exception);
+            return "";
+        }
+    }
+
+    private void copyAssetTree(String assetPath, File destination) throws IOException {
+        String[] children = getAssets().list(assetPath);
+        if (children == null || children.length == 0) {
+            File parent = destination.getParentFile();
+            if (parent != null && !parent.isDirectory() && !parent.mkdirs())
+                throw new IOException("Cannot create " + parent);
+            try (java.io.InputStream input = getAssets().open(assetPath);
+                 java.io.OutputStream output = new java.io.FileOutputStream(destination)) {
+                byte[] buffer = new byte[64 * 1024];
+                int read;
+                while ((read = input.read(buffer)) > 0)
+                    output.write(buffer, 0, read);
+            }
+            return;
+        }
+        if (!destination.isDirectory() && !destination.mkdirs())
+            throw new IOException("Cannot create " + destination);
+        for (String child : children)
+            copyAssetTree(assetPath + "/" + child, new File(destination, child));
+    }
+
+    private static void deleteRecursively(File file) {
+        File[] children = file.listFiles();
+        if (children != null)
+            for (File child : children)
+                deleteRecursively(child);
+        file.delete();
     }
 
     /** True when the app may read shared storage through ordinary file paths. */

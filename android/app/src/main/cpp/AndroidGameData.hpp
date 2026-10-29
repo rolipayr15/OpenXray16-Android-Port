@@ -78,8 +78,9 @@ public:
     ~GameDataMount();
 
     // Writes <privateRoot>/fsgame.ltx and returns its path in fsgamePath.
+    // engineResources is the unpacked OpenXRay resource tree (GL shaders).
     bool Mount(GameDataSource& source, const std::vector<GameDataFile>& files, const GameLayout& layout,
-        const std::string& privateRoot, std::string& fsgamePath);
+        const std::string& privateRoot, const std::string& engineResources, std::string& fsgamePath);
 
     size_t ArchiveCount() const { return archives; }
     size_t LooseFileCount() const { return looseFiles; }
@@ -88,6 +89,7 @@ public:
 private:
     size_t archives = 0;
     size_t looseFiles = 0;
+    size_t engineShaders = 0;
     bool direct = false;
     bool mounted = false;
 };

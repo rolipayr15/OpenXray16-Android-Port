@@ -15,6 +15,7 @@
 #include "AndroidVulkanRenderServices.hpp"
 #include "AndroidVulkanRendererModule.hpp"
 #include "Include/xrAPI/xrAPI.h"
+#include "Include/xrRender/xrRender.h"
 #include "xrEngine/x_ray.h"
 #include "xrGame/xrGame.h"
 #include "xrGameSpy/GameSpy_MasterServer.h"
@@ -398,6 +399,9 @@ int main(int argc, char** argv)
     const char* gameDataUri = FindArgument(argc, argv, "--game-data-uri");
     const char* gameDataPath = FindArgument(argc, argv, "--game-data-path");
     const char* gameMode = FindArgument(argc, argv, "--game-mode");
+    const char* rendererName = FindArgument(argc, argv, "--renderer");
+    const char* engineResources = FindArgument(argc, argv, "--engine-resources");
+    const bool useGles = std::strcmp(rendererName, "gles") == 0;
     const char* appFilesPath = FindArgument(argc, argv, "--app-files-path");
     const char* profileId = FindArgument(argc, argv, "--profile-id");
     const char* renderScale = FindArgument(argc, argv, "--render-scale");
@@ -515,7 +519,7 @@ int main(int argc, char** argv)
     const std::string privateRoot = std::string(appFilesPath) + "/xr-core-smoke";
     GameDataMount gameData;
     std::string fixtureConfig;
-    if (!gameData.Mount(*dataSource, treeFiles, layout, privateRoot, fixtureConfig) ||
+    if (!gameData.Mount(*dataSource, treeFiles, layout, privateRoot, engineResources, fixtureConfig) ||
         !WriteFile(privateRoot + "/_appdata_/android_smoke.txt", "openxray-android-vfs-smoke-v1\n"))
     {
         __android_log_write(ANDROID_LOG_ERROR, LogTag, "Could not prepare the private engine root");
@@ -601,12 +605,16 @@ int main(int argc, char** argv)
             commandLine += ' ';
             commandLine += engineArguments;
         }
+        // Vulkan is the default renderer. "gles" selects the upstream GL
+        // renderer (R3-class deferred pipeline, real shaders and materials)
+        // running on OpenGL ES 3.2.
         AndroidVulkanRendererModule rendererModule(appFilesPath);
-        const std::array<RendererModule*, 2> renderModules = { &rendererModule, nullptr };
+        const std::array<RendererModule*, 2> renderModules = {
+            useGles ? xray::render::render_gl::GetRendererModule() : &rendererModule, nullptr };
 
         __android_log_print(ANDROID_LOG_INFO, LogTag,
-            "Starting full xrEngine/xrGame lifecycle with Android Vulkan renderer module (%s mode)",
-            GameFlavorName(layout.flavor));
+            "Starting full xrEngine/xrGame lifecycle with the %s renderer (%s mode)",
+            useGles ? "OpenGL ES" : "Vulkan", GameFlavorName(layout.flavor));
         CApplication application(commandLine.c_str(), &xrGame, renderModules);
         SDL_AddEventWatch(&AndroidLifecycleWatch, nullptr);
         const int result = application.Run();

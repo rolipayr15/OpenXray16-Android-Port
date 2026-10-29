@@ -352,10 +352,8 @@ add_library(main SHARED
     "${AndroidWorldVertSpv.hpp}"
     "${AndroidWorldFragSpv.hpp}"
 )
-# Keep the desktop GL renderer graph as a separate static milestone until its
-# GL-facing entry points have Android-safe runtime implementations. xrGame is
-# linked below and contributes the Stage-6 ABI probe to libmain.so.
-add_dependencies(main xrRender_GL)
+# The upstream GL renderer runs on OpenGL ES 3.2 as the selectable "gles"
+# renderer; SDL loads EGL/GLES at runtime, so no GL library is linked here.
 target_compile_features(main PRIVATE cxx_std_17)
 target_compile_definitions(main PRIVATE
     XRAY_STATIC_BUILD
@@ -384,6 +382,8 @@ target_include_directories(main PRIVATE
 find_library(ANDROID_LIBRARY android REQUIRED)
 find_library(LOG_LIBRARY log REQUIRED)
 find_library(VULKAN_LIBRARY vulkan REQUIRED)
+# Dear ImGui's OpenGL 3 backend (used by the GL renderer) calls GLES directly.
+find_library(GLESV3_LIBRARY GLESv3 REQUIRED)
 
 target_link_libraries(main PRIVATE
     xrRender_GL
@@ -403,7 +403,9 @@ target_link_libraries(main PRIVATE
     xrImGui
     xrGameSpy
     xrGame
+    xrRender_GL
     ${ANDROID_LIBRARY}
     ${LOG_LIBRARY}
     ${VULKAN_LIBRARY}
+    ${GLESV3_LIBRARY}
 )

@@ -57,6 +57,10 @@ public final class LauncherActivity extends Activity {
         "Определить автоматически", "Тень Чернобыля", "Чистое Небо", "Зов Припяти",
         "Свободный режим (смешанные моды)"
     };
+    private static final String[] RENDERERS = {"vulkan", "gles"};
+    private static final String[] RENDERER_LABELS = {
+        "Vulkan (основной)", "OpenGL ES 3.2 — полный рендер X-Ray (экспериментальный)"
+    };
     private static final int[] VIEW_DISTANCES = {100, 80, 60, 40};
     private static final String[] VIEW_DISTANCE_LABELS = {
         "Максимальная (100%)", "Высокая (80%)", "Средняя (60%)", "Короткая (40%)"
@@ -73,6 +77,7 @@ public final class LauncherActivity extends Activity {
     private Spinner resolutionSpinner;
     private Spinner viewDistanceSpinner;
     private Spinner gameModeSpinner;
+    private Spinner rendererSpinner;
     private TextView storageAccessState;
     private Button storageAccessButton;
     private Button launchButton;
@@ -90,6 +95,7 @@ public final class LauncherActivity extends Activity {
         int renderScale;
         int viewDistance;
         String gameMode;
+        String renderer;
     }
 
     @Override
@@ -182,6 +188,18 @@ public final class LauncherActivity extends Activity {
         gameModeHint.setPadding(0, dp(7), 0, 0);
         profileCard.addView(gameModeHint, matchWidth());
 
+        profileCard.addView(fieldLabel("Рендер"), matchWidthWithTopMargin(16));
+        rendererSpinner = new Spinner(this);
+        rendererSpinner.setAdapter(new ArrayAdapter<>(this,
+            android.R.layout.simple_spinner_dropdown_item, RENDERER_LABELS));
+        rendererSpinner.setBackgroundTintList(ColorStateList.valueOf(Color.rgb(103, 145, 111)));
+        profileCard.addView(rendererSpinner, matchWidth());
+        TextView rendererHint = label(
+            "OpenGL ES использует настоящие шейдеры и материалы X-Ray; требует GLES 3.2",
+            12, Color.rgb(130, 148, 134), false);
+        rendererHint.setPadding(0, dp(7), 0, 0);
+        profileCard.addView(rendererHint, matchWidth());
+
         profileCard.addView(fieldLabel("Внутреннее разрешение"), matchWidthWithTopMargin(16));
         resolutionSpinner = new Spinner(this);
         resolutionSpinner.setAdapter(new ArrayAdapter<>(this,
@@ -266,6 +284,7 @@ public final class LauncherActivity extends Activity {
             profile.renderScale = 67;
             profile.viewDistance = 80;
             profile.gameMode = "auto";
+            profile.renderer = "vulkan";
             profiles.add(profile);
             saveProfile(profile);
             saveProfileIds();
@@ -300,6 +319,7 @@ public final class LauncherActivity extends Activity {
         profile.renderScale = preferences.getInt(prefix + "scale", 67);
         profile.viewDistance = preferences.getInt(prefix + "distance", 80);
         profile.gameMode = preferences.getString(prefix + "mode", "auto");
+        profile.renderer = preferences.getString(prefix + "renderer", "vulkan");
         return profile;
     }
 
@@ -312,7 +332,8 @@ public final class LauncherActivity extends Activity {
             .putInt(prefix + "master_port", profile.masterPort)
             .putInt(prefix + "scale", profile.renderScale)
             .putInt(prefix + "distance", profile.viewDistance)
-            .putString(prefix + "mode", profile.gameMode).apply();
+            .putString(prefix + "mode", profile.gameMode)
+            .putString(prefix + "renderer", profile.renderer).apply();
     }
 
     private void saveProfileIds() {
@@ -354,6 +375,7 @@ public final class LauncherActivity extends Activity {
         resolutionSpinner.setSelection(scaleIndex(profile.renderScale));
         viewDistanceSpinner.setSelection(viewDistanceIndex(profile.viewDistance));
         gameModeSpinner.setSelection(gameModeIndex(profile.gameMode));
+        rendererSpinner.setSelection("gles".equals(profile.renderer) ? 1 : 0);
         launchButton.setEnabled(hasPersistedReadPermission(profile.gameDataUri));
         updateStorageAccessState();
         deleteButton.setEnabled(profiles.size() > 1);
@@ -393,6 +415,7 @@ public final class LauncherActivity extends Activity {
         activeProfile.renderScale = RENDER_SCALES[resolutionSpinner.getSelectedItemPosition()];
         activeProfile.viewDistance = VIEW_DISTANCES[viewDistanceSpinner.getSelectedItemPosition()];
         activeProfile.gameMode = GAME_MODES[gameModeSpinner.getSelectedItemPosition()];
+        activeProfile.renderer = RENDERERS[rendererSpinner.getSelectedItemPosition()];
         saveProfile(activeProfile);
         saveProfileIds();
         return true;
@@ -410,6 +433,7 @@ public final class LauncherActivity extends Activity {
         profile.renderScale = copyCurrent && activeProfile != null ? activeProfile.renderScale : 67;
         profile.viewDistance = copyCurrent && activeProfile != null ? activeProfile.viewDistance : 80;
         profile.gameMode = copyCurrent && activeProfile != null ? activeProfile.gameMode : "auto";
+        profile.renderer = copyCurrent && activeProfile != null ? activeProfile.renderer : "vulkan";
         profiles.add(profile);
         saveProfile(profile);
         saveProfileIds();
@@ -431,7 +455,7 @@ public final class LauncherActivity extends Activity {
         String prefix = PROFILE_PREFIX + activeProfile.id + ".";
         preferences.edit().remove(prefix + "name").remove(prefix + "uri")
             .remove(prefix + "args").remove(prefix + "master_host").remove(prefix + "master_port")
-            .remove(prefix + "scale").remove(prefix + "distance").remove(prefix + "mode").apply();
+            .remove(prefix + "scale").remove(prefix + "distance").remove(prefix + "mode").remove(prefix + "renderer").apply();
         profiles.remove(activeProfile);
         saveProfileIds();
         refreshProfileSpinner(profiles.get(0).id);
@@ -487,6 +511,7 @@ public final class LauncherActivity extends Activity {
         intent.putExtra(OpenXRayActivity.EXTRA_RENDER_SCALE, profile.renderScale);
         intent.putExtra(OpenXRayActivity.EXTRA_VIEW_DISTANCE, profile.viewDistance);
         intent.putExtra(OpenXRayActivity.EXTRA_GAME_MODE, profile.gameMode);
+        intent.putExtra(OpenXRayActivity.EXTRA_RENDERER, profile.renderer);
         startActivity(intent);
         if (fromShortcut)
             finish();

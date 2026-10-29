@@ -454,7 +454,98 @@ public:
     std::string AbsolutePath(const std::string&) const override { return std::string(); }
 };
 
-int OpenSafVirtualFile(pcstr sourceId) { return AndroidSafOpenFile(sourceId); }
+// Virtual files come from the SAF tree, or ("file:" prefix) from engine
+// resources the APK unpacked into app storage.
+constexpr char LocalFilePrefix[] = "file:";
+
+int OpenVirtualFile(pcstr sourceId)
+{
+    if (std::strncmp(sourceId, LocalFilePrefix, sizeof(LocalFilePrefix) - 1) == 0)
+        return open(sourceId + sizeof(LocalFilePrefix) - 1, O_RDONLY | O_CLOEXEC);
+    return AndroidSafOpenFile(sourceId);
+}
+
+// Resolves an fsgame alias to a path relative to $fs_root$ by following the
+// root chain ("$game_shaders$" -> "$game_data$" -> "$game_root$" -> ...).
+std::string ResolveFsgameAlias(const std::string& fsgame, std::string alias)
+{
+    std::string relative;
+    for (int depth = 0; depth < 16; ++depth)
+    {
+        if (alias == "$fs_root$")
+            return relative;
+        std::istringstream stream(fsgame);
+        std::string line;
+        FsgameLine parsed;
+        bool found = false;
+        while (std::getline(stream, line))
+        {
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            if (!ParseFsgameLine(line, parsed) || parsed.id != alias || parsed.fields.size() < 3)
+                continue;
+            std::string add = parsed.fields.size() > 3 ? Trim(parsed.fields[3]) : std::string();
+            std::replace(add.begin(), add.end(), '\\', '/');
+            while (!add.empty() && add.back() == '/')
+                add.pop_back();
+            relative = JoinPath(LowerName(add), relative);
+            alias = LowerName(Trim(parsed.fields[2]));
+            found = true;
+            break;
+        }
+        if (!found)
+            return std::string();
+    }
+    return std::string();
+}
+
+// Exposes the OpenXRay GL shaders (unpacked from the APK) below the game's
+// $game_shaders$\gl. Files the installation ships itself shadow them, so a
+// mod can still override individual shaders.
+size_t MountEngineShaders(const std::string& privateRoot, const std::string& fsgame,
+    const std::string& engineResources)
+{
+    if (engineResources.empty())
+        return 0;
+    const std::string shaders = ResolveFsgameAlias(fsgame, "$game_shaders$");
+    const std::string sourceRoot = engineResources + "/gamedata/shaders/gl";
+    if (shaders.empty() || access(sourceRoot.c_str(), R_OK) != 0)
+        return 0;
+
+    size_t count = 0;
+    std::vector<std::string> pending{ "" };
+    while (!pending.empty())
+    {
+        const std::string relative = pending.back();
+        pending.pop_back();
+        DIR* directory = opendir(JoinPath(sourceRoot, relative).c_str());
+        if (!directory)
+            continue;
+        while (dirent* entry = readdir(directory))
+        {
+            if (entry->d_name[0] == '.')
+                continue;
+            const std::string child = JoinPath(relative, entry->d_name);
+            const std::string absolute = sourceRoot + "/" + child;
+            struct stat status{};
+            if (stat(absolute.c_str(), &status) != 0)
+                continue;
+            if (S_ISDIR(status.st_mode))
+            {
+                pending.push_back(child);
+                continue;
+            }
+            const std::string mounted = privateRoot + "/" + JoinPath(shaders, "gl/" + LowerName(child));
+            if (xrRegisterAndroidVirtualFile(mounted.c_str(), (LocalFilePrefix + absolute).c_str(),
+                    static_cast<s64>(status.st_size), static_cast<s64>(status.st_mtime)))
+            {
+                ++count;
+            }
+        }
+        closedir(directory);
+    }
+    return count;
+}
 
 void RemoveStaleLinks(const std::string& root)
 {
@@ -648,7 +739,8 @@ GameDataMount::~GameDataMount()
 }
 
 bool GameDataMount::Mount(GameDataSource& source, const std::vector<GameDataFile>& files,
-    const GameLayout& layout, const std::string& privateRoot, std::string& fsgamePath)
+    const GameLayout& layout, const std::string& privateRoot, const std::string& engineResources,
+    std::string& fsgamePath)
 {
     archives = 0;
     looseFiles = 0;
@@ -669,6 +761,8 @@ bool GameDataMount::Mount(GameDataSource& source, const std::vector<GameDataFile
         ? SynthesizeFsgame(layout.flavor) : layout.fsgameContent;
     const std::string gameRootPath = source.AbsolutePath(layout.gameRoot);
     direct = !gameRootPath.empty();
+    xrAddAndroidVirtualRoot(privateRoot.c_str());
+    xrSetAndroidVirtualFileOpener(&OpenVirtualFile);
 
     std::string fsgame;
     if (direct)
@@ -699,8 +793,6 @@ bool GameDataMount::Mount(GameDataSource& source, const std::vector<GameDataFile
         // SAF: register every file of the installation under the private root
         // as a virtual file. The locator scans and opens them like real files;
         // each open asks the provider for a fresh descriptor.
-        xrAddAndroidVirtualRoot(privateRoot.c_str());
-        xrSetAndroidVirtualFileOpener(&OpenSafVirtualFile);
         fsgame = RewriteFsgame(base, nullptr);
         for (const GameDataFile& file : files)
         {
@@ -746,12 +838,15 @@ bool GameDataMount::Mount(GameDataSource& source, const std::vector<GameDataFile
         }
     }
 
+    engineShaders = MountEngineShaders(privateRoot, fsgame, engineResources);
+
     fsgamePath = privateRoot + "/fsgame.ltx";
     if (!WriteTextFile(fsgamePath, fsgame))
         return false;
     mounted = true;
     __android_log_print(ANDROID_LOG_INFO, LogTag,
-        "Mounted installation via %s: %zu archives, %zu loose files", source.Name(), archives, looseFiles);
+        "Mounted installation via %s: %zu archives, %zu loose files, %zu engine shaders",
+        source.Name(), archives, looseFiles, engineShaders);
     return true;
 }
 
