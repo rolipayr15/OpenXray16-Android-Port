@@ -304,6 +304,17 @@ openxray_embed_android_shader(AndroidWorldVertSpv.hpp
 openxray_embed_android_shader(AndroidWorldFragSpv.hpp
     "${CMAKE_CURRENT_LIST_DIR}/shaders/world.frag" OpenXRayWorldFragSpv)
 
+# Debug APKs are what testers run on phones. At Clang's default -O0 the game
+# simulation, physics, Lua bindings and the locator are several times slower
+# than on desktop, so keep assertions and symbols but optimize the code.
+# Pass -DOPENXRAY_ANDROID_OPTIMIZE_DEBUG=OFF for step-by-step debugging.
+option(OPENXRAY_ANDROID_OPTIMIZE_DEBUG "Compile engine code at -O2 in Debug builds" ON)
+if (OPENXRAY_ANDROID_OPTIMIZE_DEBUG)
+    set(OPENXRAY_ANDROID_DEBUG_OPTIMIZATION -O2)
+else()
+    set(OPENXRAY_ANDROID_DEBUG_OPTIMIZATION -O0)
+endif()
+
 foreach(engine_target IN ITEMS
     xrMiscMath xrCore xrLuaJIT xrLuabind xrLuaFix xrOPCODE xrODE GameSpy-oxr xrImGui xrAPI xrScriptEngine
     xrCDB xrMaterialSystem xrNetServer xrSound xrEngine xrParticles xrRender_GL
@@ -316,6 +327,8 @@ foreach(engine_target IN ITEMS
         $<$<CONFIG:Debug>:DEBUG>
         $<$<NOT:$<CONFIG:Debug>>:NDEBUG>
     )
+    target_compile_options(${engine_target} PRIVATE
+        $<$<CONFIG:Debug>:${OPENXRAY_ANDROID_DEBUG_OPTIMIZATION}>)
     set_target_properties(${engine_target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endforeach()
 
@@ -351,7 +364,13 @@ target_compile_definitions(main PRIVATE
 # The Android bridge performs DDS transcoding, detail-slot decompression and
 # per-frame scene submission itself. Keep debug symbols/assertions, but do not
 # run those hot paths at Clang's default -O0 on real devices.
-target_compile_options(main PRIVATE $<$<CONFIG:Debug>:-O2>)
+target_compile_options(main PRIVATE $<$<CONFIG:Debug>:${OPENXRAY_ANDROID_DEBUG_OPTIMIZATION}>)
+# Drop unreferenced engine code from the shipped library and fold identical
+# functions; both shrink libmain.so and its load time noticeably.
+target_link_options(main PRIVATE
+    -Wl,--gc-sections
+    $<$<NOT:$<CONFIG:Debug>>:-Wl,--icf=safe>
+)
 target_include_directories(main PRIVATE
     "${OPENXRAY_ANDROID_GENERATED_DIR}"
     "${OPENXRAY_ROOT}/src"

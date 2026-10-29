@@ -35,6 +35,16 @@ android {
         }
         release {
             minifyEnabled false
+            debuggable false
+            jniDebuggable false
+            // Sideloaded test builds stay installable without a private key;
+            // a store release overrides this with its own signing config.
+            signingConfig signingConfigs.debug
+            ndk {
+                // Unstripped symbols are kept beside the APK for symbolizing
+                // tombstones; the packaged libraries are stripped.
+                debugSymbolLevel 'FULL'
+            }
         }
     }
 
