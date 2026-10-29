@@ -10,6 +10,8 @@
 # exclude binaries and temporary files
 [Bb]in/
 [Bb]uild*/
+# LuaJIT's host build tool is source, not output.
+!Externals/LuaJIT-proj/HostBuildTools/buildvm/
 local.properties
 
 # Local game data provided for testing (proprietary; never commit)

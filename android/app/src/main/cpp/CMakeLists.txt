@@ -194,22 +194,38 @@ set(LUA_USE_DLOPEN ON CACHE BOOL "" FORCE)
 # Studio Build Tools are not installed; Android code itself still uses NDK
 # Clang. The versioned directory lives beside the Android SDK/toolchains and is
 # intentionally outside the source tree.
+# The pinned toolchains live in a ".toolchains" directory next to the checkout.
+# Search upwards so nested checkouts (git worktrees) find the same directory;
+# OPENXRAY_TOOLCHAINS_DIR overrides the search.
+if (NOT OPENXRAY_TOOLCHAINS_DIR AND DEFINED ENV{OPENXRAY_TOOLCHAINS_DIR})
+    set(OPENXRAY_TOOLCHAINS_DIR "$ENV{OPENXRAY_TOOLCHAINS_DIR}")
+endif()
+if (NOT OPENXRAY_TOOLCHAINS_DIR)
+    set(openxray_search_dir "${OPENXRAY_ROOT}")
+    foreach(openxray_level RANGE 6)
+        get_filename_component(openxray_search_dir "${openxray_search_dir}/.." ABSOLUTE)
+        if (IS_DIRECTORY "${openxray_search_dir}/.toolchains")
+            set(OPENXRAY_TOOLCHAINS_DIR "${openxray_search_dir}/.toolchains")
+            break()
+        endif()
+    endforeach()
+endif()
 file(GLOB OPENXRAY_HOST_LLVM_MINGW_CANDIDATES LIST_DIRECTORIES TRUE
-    "${OPENXRAY_ROOT}/../.toolchains/llvm-mingw-*-ucrt-x86_64")
+    "${OPENXRAY_TOOLCHAINS_DIR}/llvm-mingw-*-ucrt-x86_64")
 if (OPENXRAY_HOST_LLVM_MINGW_CANDIDATES)
     list(SORT OPENXRAY_HOST_LLVM_MINGW_CANDIDATES COMPARE NATURAL ORDER DESCENDING)
     list(GET OPENXRAY_HOST_LLVM_MINGW_CANDIDATES 0 OPENXRAY_HOST_LLVM_MINGW_ROOT)
     set(OPENXRAY_HOST_LLVM_MINGW_ROOT "${OPENXRAY_HOST_LLVM_MINGW_ROOT}" CACHE PATH
         "Portable LLVM-MinGW root used for LuaJIT host generators" FORCE)
 endif()
-if (EXISTS "${OPENXRAY_ROOT}/../.toolchains/tcc-0.9.27-win64-bin/tcc/tcc.exe")
+if (EXISTS "${OPENXRAY_TOOLCHAINS_DIR}/tcc-0.9.27-win64-bin/tcc/tcc.exe")
     set(OPENXRAY_HOST_TCC64
-        "${OPENXRAY_ROOT}/../.toolchains/tcc-0.9.27-win64-bin/tcc/tcc.exe" CACHE FILEPATH
+        "${OPENXRAY_TOOLCHAINS_DIR}/tcc-0.9.27-win64-bin/tcc/tcc.exe" CACHE FILEPATH
         "TinyCC executable used for 64-bit LuaJIT host generators" FORCE)
 endif()
-if (EXISTS "${OPENXRAY_ROOT}/../.toolchains/tcc-0.9.27-win32-bin/tcc/tcc.exe")
+if (EXISTS "${OPENXRAY_TOOLCHAINS_DIR}/tcc-0.9.27-win32-bin/tcc/tcc.exe")
     set(OPENXRAY_HOST_TCC32
-        "${OPENXRAY_ROOT}/../.toolchains/tcc-0.9.27-win32-bin/tcc/tcc.exe" CACHE FILEPATH
+        "${OPENXRAY_TOOLCHAINS_DIR}/tcc-0.9.27-win32-bin/tcc/tcc.exe" CACHE FILEPATH
         "TinyCC executable used for 32-bit LuaJIT host generators" FORCE)
 endif()
 add_subdirectory("${OPENXRAY_ROOT}/Externals/LuaJIT-proj" "${CMAKE_CURRENT_BINARY_DIR}/LuaJIT")
