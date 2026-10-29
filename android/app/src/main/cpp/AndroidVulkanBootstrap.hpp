@@ -73,6 +73,9 @@ public:
 
     bool Initialize(SDL_Window* window, const char* appFilesPath);
     bool RecreateSurface(SDL_Window* window);
+    // Rebuilds only the swapchain for the current window (resize, rotation,
+    // resume); GPU resources are kept. Falls back to RecreateSurface on failure.
+    bool RecreateSwapchain(SDL_Window* window);
     AndroidVulkanUiTexture CreateUiTexture(const char* name, std::uint32_t width,
         std::uint32_t height, const std::uint8_t* rgbaPixels, std::size_t byteCount);
     bool UpdateUiTexture(AndroidVulkanUiTexture texture,

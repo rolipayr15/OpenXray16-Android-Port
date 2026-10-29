@@ -89,6 +89,32 @@ bool VerifyFilesystemFixture()
     return valid;
 }
 
+// SDL blocks the main thread while the activity is paused, but OpenAL Soft
+// mixes on its own thread and would keep playing the last buffers in the
+// background. The watch runs on the Android UI thread; ALC_SOFT_pause_device
+// is thread-safe, so it pauses mixing without touching engine state.
+int AndroidLifecycleWatch(void*, SDL_Event* event)
+{
+    using DevicePauseProc = void (*)(ALCdevice*);
+    const bool background = event->type == SDL_APP_WILLENTERBACKGROUND;
+    const bool foreground = event->type == SDL_APP_DIDENTERFOREGROUND;
+    if (!background && !foreground)
+        return 0;
+
+    ALCcontext* context = alcGetCurrentContext();
+    ALCdevice* device = context ? alcGetContextsDevice(context) : nullptr;
+    if (device && alcIsExtensionPresent(device, "ALC_SOFT_pause_device"))
+    {
+        const auto proc = reinterpret_cast<DevicePauseProc>(
+            alcGetProcAddress(device, background ? "alcDevicePauseSOFT" : "alcDeviceResumeSOFT"));
+        if (proc)
+            proc(device);
+    }
+    __android_log_print(ANDROID_LOG_INFO, LogTag, "Activity %s; audio %s",
+        background ? "entering background" : "back in foreground", background ? "paused" : "resumed");
+    return 0;
+}
+
 bool VerifyOpenALSoft()
 {
     ALCdevice* device = alcOpenDevice(nullptr);
@@ -582,7 +608,10 @@ int main(int argc, char** argv)
             "Starting full xrEngine/xrGame lifecycle with Android Vulkan renderer module (%s mode)",
             GameFlavorName(layout.flavor));
         CApplication application(commandLine.c_str(), &xrGame, renderModules);
-        return application.Run();
+        SDL_AddEventWatch(&AndroidLifecycleWatch, nullptr);
+        const int result = application.Run();
+        SDL_DelEventWatch(&AndroidLifecycleWatch, nullptr);
+        return result;
     }
 
     SDL_Window* window = SDL_CreateWindow(

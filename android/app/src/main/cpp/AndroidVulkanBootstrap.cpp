@@ -762,7 +762,24 @@ public:
 
     bool DrawFrame(std::uint64_t frameIndex, float elapsedSeconds)
     {
-        return initialized && PresentFrame(frameIndex, elapsedSeconds);
+        if (!initialized)
+            return false;
+        if (swapchainOutOfDate)
+        {
+            if (!RecreateSwapchain())
+                return false;
+            if (swapchainOutOfDate)
+                return true; // the window has no drawable area yet
+        }
+        return PresentFrame(frameIndex, elapsedSeconds);
+    }
+
+    bool ResizeSwapchain(SDL_Window* sdlWindow)
+    {
+        if (!initialized || sdlWindow != window)
+            return false;
+        swapchainOutOfDate = true;
+        return RecreateSwapchain();
     }
 
     void GetSurfaceSize(std::uint32_t& width, std::uint32_t& height) const
@@ -1606,10 +1623,8 @@ private:
         return true;
     }
 
-    bool CreateGraphicsPipeline()
+    bool CreateSwapchainImageViews()
     {
-        if (!CreateUiDescriptors())
-            return false;
         swapchainImageViews.reserve(swapchainImages.size());
         for (const VkImage image : swapchainImages)
         {
@@ -1634,6 +1649,120 @@ private:
             }
             swapchainImageViews.push_back(imageView);
         }
+        return true;
+    }
+
+    bool CreateSwapchainFramebuffers()
+    {
+        swapchainFramebuffers.reserve(swapchainImageViews.size());
+        for (const VkImageView imageView : swapchainImageViews)
+        {
+            const VkImageView attachments[] = {imageView, depthImageView};
+            VkFramebufferCreateInfo framebufferInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+            framebufferInfo.renderPass = renderPass;
+            framebufferInfo.attachmentCount = 2;
+            framebufferInfo.pAttachments = attachments;
+            framebufferInfo.width = extent.width;
+            framebufferInfo.height = extent.height;
+            framebufferInfo.layers = 1;
+
+            VkFramebuffer framebuffer = VK_NULL_HANDLE;
+            const VkResult result = vkCreateFramebuffer(device, &framebufferInfo, nullptr, &framebuffer);
+            if (result != VK_SUCCESS)
+            {
+                LogVulkanError("vkCreateFramebuffer", result);
+                return false;
+            }
+            swapchainFramebuffers.push_back(framebuffer);
+        }
+        return true;
+    }
+
+    void DestroySwapchainTargets()
+    {
+        for (const VkFramebuffer framebuffer : swapchainFramebuffers)
+            vkDestroyFramebuffer(device, framebuffer, nullptr);
+        swapchainFramebuffers.clear();
+        if (depthImageView != VK_NULL_HANDLE)
+            vkDestroyImageView(device, depthImageView, nullptr);
+        if (depthImage != VK_NULL_HANDLE)
+            vkDestroyImage(device, depthImage, nullptr);
+        if (depthMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device, depthMemory, nullptr);
+        depthImageView = VK_NULL_HANDLE;
+        depthImage = VK_NULL_HANDLE;
+        depthMemory = VK_NULL_HANDLE;
+        for (const VkImageView imageView : swapchainImageViews)
+            vkDestroyImageView(device, imageView, nullptr);
+        swapchainImageViews.clear();
+        swapchainImages.clear();
+    }
+
+    // Android destroys the window surface when the app is backgrounded and
+    // reports VK_ERROR_OUT_OF_DATE_KHR / VK_ERROR_SURFACE_LOST_KHR afterwards.
+    // The device, pipelines, textures and meshes stay valid, so only the
+    // surface-dependent objects are rebuilt; no GPU resource is re-uploaded.
+    bool RecreateSwapchain()
+    {
+        int drawableWidth = 0;
+        int drawableHeight = 0;
+        SDL_Vulkan_GetDrawableSize(window, &drawableWidth, &drawableHeight);
+        if (drawableWidth <= 0 || drawableHeight <= 0)
+            return true; // still in the background; retry on a later frame
+
+        vkDeviceWaitIdle(device);
+        frameInFlight = false;
+        DestroySwapchainTargets();
+        if (swapchain != VK_NULL_HANDLE)
+            vkDestroySwapchainKHR(device, swapchain, nullptr);
+        swapchain = VK_NULL_HANDLE;
+
+        // The acquire/present that failed may leave the semaphores pending.
+        vkDestroySemaphore(device, imageAvailable, nullptr);
+        vkDestroySemaphore(device, renderFinished, nullptr);
+        imageAvailable = VK_NULL_HANDLE;
+        renderFinished = VK_NULL_HANDLE;
+        VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailable) != VK_SUCCESS ||
+            vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinished) != VK_SUCCESS)
+        {
+            return false;
+        }
+
+        if (surfaceLost)
+        {
+            vkDestroySurfaceKHR(instance, surface, nullptr);
+            surface = VK_NULL_HANDLE;
+            if (!CreateSurface())
+                return false;
+        }
+
+        const VkFormat previousFormat = surfaceFormat.format;
+        if (!CreateSwapchain())
+            return false;
+        if (surfaceFormat.format != previousFormat)
+        {
+            // The render pass and every pipeline are bound to the old format.
+            __android_log_write(ANDROID_LOG_ERROR, LogTag,
+                "Vulkan surface format changed on recreation; a full renderer reset is required");
+            return false;
+        }
+        if (!CreateSwapchainImageViews() || !CreateDepthResources() || !CreateSwapchainFramebuffers())
+            return false;
+
+        swapchainOutOfDate = false;
+        surfaceLost = false;
+        __android_log_print(ANDROID_LOG_INFO, LogTag,
+            "Vulkan swapchain recreated without reloading GPU resources (%ux%u)", extent.width, extent.height);
+        return true;
+    }
+
+    bool CreateGraphicsPipeline()
+    {
+        if (!CreateUiDescriptors())
+            return false;
+        if (!CreateSwapchainImageViews())
+            return false;
 
         if (!CreateDepthResources())
             return false;
@@ -1695,27 +1824,8 @@ private:
             return false;
         }
 
-        swapchainFramebuffers.reserve(swapchainImageViews.size());
-        for (const VkImageView imageView : swapchainImageViews)
-        {
-            const VkImageView attachments[] = {imageView, depthImageView};
-            VkFramebufferCreateInfo framebufferInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-            framebufferInfo.renderPass = renderPass;
-            framebufferInfo.attachmentCount = 2;
-            framebufferInfo.pAttachments = attachments;
-            framebufferInfo.width = extent.width;
-            framebufferInfo.height = extent.height;
-            framebufferInfo.layers = 1;
-
-            VkFramebuffer framebuffer = VK_NULL_HANDLE;
-            result = vkCreateFramebuffer(device, &framebufferInfo, nullptr, &framebuffer);
-            if (result != VK_SUCCESS)
-            {
-                LogVulkanError("vkCreateFramebuffer", result);
-                return false;
-            }
-            swapchainFramebuffers.push_back(framebuffer);
-        }
+        if (!CreateSwapchainFramebuffers())
+            return false;
 
         VkShaderModule vertexShader = VK_NULL_HANDLE;
         VkShaderModule fragmentShader = VK_NULL_HANDLE;
@@ -2041,6 +2151,13 @@ private:
         uint32_t imageIndex = 0;
         result = vkAcquireNextImageKHR(
             device, swapchain, UINT64_MAX, imageAvailable, VK_NULL_HANDLE, &imageIndex);
+        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR)
+        {
+            // Nothing was submitted for this frame; skip it and rebuild.
+            swapchainOutOfDate = true;
+            surfaceLost |= result == VK_ERROR_SURFACE_LOST_KHR;
+            return true;
+        }
         if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
         {
             LogVulkanError("vkAcquireNextImageKHR", result);
@@ -2246,6 +2363,14 @@ private:
         present.pSwapchains = &swapchain;
         present.pImageIndices = &imageIndex;
         result = vkQueuePresentKHR(presentQueue, &present);
+        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR)
+        {
+            swapchainOutOfDate = true;
+            surfaceLost |= result == VK_ERROR_SURFACE_LOST_KHR;
+            return true;
+        }
+        // SUBOPTIMAL is expected: the swapchain intentionally keeps the
+        // identity transform while the display is rotated.
         if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
         {
             LogVulkanError("vkQueuePresentKHR", result);
@@ -2545,6 +2670,10 @@ private:
     VkSemaphore renderFinished = VK_NULL_HANDLE;
     VkFence frameFence = VK_NULL_HANDLE;
     bool frameInFlight{};
+    // Set by acquire/present when the window surface went away; DrawFrame
+    // rebuilds the swapchain before the next frame.
+    bool swapchainOutOfDate{};
+    bool surfaceLost{};
     bool initialized = false;
 };
 } // namespace
@@ -2563,6 +2692,11 @@ AndroidVulkanRenderer::~AndroidVulkanRenderer() = default;
 bool AndroidVulkanRenderer::Initialize(SDL_Window* window, const char* appFilesPath)
 {
     return implementation->renderer.Initialize(window, appFilesPath);
+}
+
+bool AndroidVulkanRenderer::RecreateSwapchain(SDL_Window* window)
+{
+    return implementation->renderer.ResizeSwapchain(window);
 }
 
 bool AndroidVulkanRenderer::RecreateSurface(SDL_Window* window)

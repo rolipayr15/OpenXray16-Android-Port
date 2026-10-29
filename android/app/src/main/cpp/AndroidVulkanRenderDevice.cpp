@@ -1674,9 +1674,12 @@ void AndroidVulkanRenderDevice::Reset(
         return;
     }
 
+    // A resize or rotation keeps the device and every uploaded texture and
+    // mesh; only a changed window needs the full surface rebuild.
+    const bool sameWindow = window == targetWindow;
     window = targetWindow;
     UpdateDimensions(window, width, height, halfWidth, halfHeight);
-    failed = !renderer.RecreateSurface(window);
+    failed = !(sameWindow && renderer.RecreateSwapchain(window)) && !renderer.RecreateSurface(window);
     initialized = !failed;
     if (initialized)
     {
