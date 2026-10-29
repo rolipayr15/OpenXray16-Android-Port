@@ -497,12 +497,16 @@ void CLocatorAPI::LoadArchive(archive& A, pcstr entrypoint)
     string_path fs_entry_point;
     bool shouldDecrypt = false;
     fs_entry_point[0] = 0;
+    // Archive entry points are relative to the installation root. That is
+    // $fs_root$, unless the host keeps the installation apart from its
+    // writable state and declares it as $game_root$ (Android direct mode).
+    const pcstr archiveRoot = path_exist("$game_root$") ? "$game_root$" : "$fs_root$";
     if (A.header)
     {
         shared_str read_path = A.header->r_string("header", "entry_point");
         if (0 == xr_stricmp(read_path.c_str(), "gamedata"))
         {
-            read_path = "$fs_root$";
+            read_path = archiveRoot;
             FS_Path* root = nullptr;
             if (get_path(read_path.c_str(), &root))
             {
@@ -521,7 +525,7 @@ void CLocatorAPI::LoadArchive(archive& A, pcstr entrypoint)
             R_ASSERT2(count == 1, read_path.c_str());
 
             FS_Path* root = nullptr;
-            if (get_path("$fs_root$", &root))
+            if (get_path(archiveRoot, &root))
             {
                 // R_ASSERT3 (root, "path not found ", alias_name);
                 xr_strcpy(fs_entry_point, sizeof fs_entry_point, root->m_Path);
@@ -539,7 +543,7 @@ void CLocatorAPI::LoadArchive(archive& A, pcstr entrypoint)
             shouldDecrypt = true;
         }
         FS_Path* root = nullptr;
-        if (get_path("$fs_root$", &root))
+        if (get_path(archiveRoot, &root))
         {
             // R_ASSERT3 (root, "path not found ", read_path.c_str());
             xr_strcpy(fs_entry_point, sizeof fs_entry_point, root->m_Path);
