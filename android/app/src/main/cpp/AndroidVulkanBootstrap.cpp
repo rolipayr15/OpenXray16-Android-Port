@@ -89,13 +89,15 @@ struct WorldPushConstants
     float worldViewProjection[16];
     std::uint32_t materialFlags{};
     float detailScale{1.f};
-    std::uint32_t padding[2]{};
+    float fogNear{};
+    float fogFar{}; // 0 disables fog (HUD)
     float ambientAndSunDirectionX[4]{};
     float hemiAndSunDirectionY[4]{};
     float sunColorAndDirectionZ[4]{};
     // Upper-left 3x3 of the model->world rotation, passed as GLSL mat3 columns
     // (each column padded to a vec4 per std430). world.vert computes
-    // worldNormal = mat3(col0, col1, col2) * normal.
+    // worldNormal = mat3(col0, col1, col2) * normal. The fourth components
+    // carry the fog colour, keeping the block at 176 bytes.
     float normalMatrixCol0[4]{};
     float normalMatrixCol1[4]{};
     float normalMatrixCol2[4]{};
@@ -679,6 +681,14 @@ public:
             frameInFlight = false;
         }
         worldDraws.clear();
+    }
+
+    void SetWorldFog(const float* color, float fogNear, float fogFar)
+    {
+        if (color)
+            std::copy_n(color, 3, worldFogColor);
+        worldFogFar = std::max(fogFar, 0.f);
+        worldFogNear = std::clamp(fogNear, 0.f, worldFogFar);
     }
 
     void SetWorldClearColor(float red, float green, float blue)
@@ -2243,6 +2253,16 @@ private:
                     constants.normalMatrixCol2[0] = draw.worldRotation[6];
                     constants.normalMatrixCol2[1] = draw.worldRotation[7];
                     constants.normalMatrixCol2[2] = draw.worldRotation[8];
+                    // Distance fog towards the weather's fog colour, as X-Ray
+                    // does; the HUD pass is never fogged.
+                    if (!hud)
+                    {
+                        constants.fogNear = worldFogNear;
+                        constants.fogFar = worldFogFar;
+                    }
+                    constants.normalMatrixCol0[3] = worldFogColor[0];
+                    constants.normalMatrixCol1[3] = worldFogColor[1];
+                    constants.normalMatrixCol2[3] = worldFogColor[2];
                     if (!hasBoundConstants ||
                         std::memcmp(&boundConstants, &constants, sizeof(constants)) != 0)
                     {
@@ -2653,6 +2673,9 @@ private:
     std::vector<WorldGpuMesh> worldMeshes;
     std::vector<WorldDraw> worldDraws;
     float worldClearColor[3]{0.015f, 0.02f, 0.018f};
+    float worldFogColor[3]{0.5f, 0.5f, 0.5f};
+    float worldFogNear{};
+    float worldFogFar{};
     float worldAmbient[3]{0.08f, 0.08f, 0.08f};
     float worldHemi[3]{0.25f, 0.25f, 0.25f};
     float worldSunColor[3]{0.35f, 0.35f, 0.35f};
@@ -2750,6 +2773,11 @@ void AndroidVulkanRenderer::BeginUiFrame()
 void AndroidVulkanRenderer::BeginWorldFrame()
 {
     implementation->renderer.BeginWorldFrame();
+}
+
+void AndroidVulkanRenderer::SetWorldFog(const float* color, float fogNear, float fogFar)
+{
+    implementation->renderer.SetWorldFog(color, fogNear, fogFar);
 }
 
 void AndroidVulkanRenderer::SetWorldClearColor(float red, float green, float blue)

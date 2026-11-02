@@ -89,6 +89,8 @@ public:
     void BeginUiFrame();
     void BeginWorldFrame();
     void SetWorldClearColor(float red, float green, float blue);
+    // Linear distance fog for world draws; fogFar <= 0 disables it.
+    void SetWorldFog(const float* color, float fogNear, float fogFar);
     void SetWorldLighting(const float* ambient, const float* hemi,
         const float* sunColor, const float* sunDirection);
     void SubmitUiBatch(const AndroidVulkanUiVertex* vertices, std::size_t vertexCount,

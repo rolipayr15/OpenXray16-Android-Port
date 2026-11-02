@@ -1575,9 +1575,17 @@ void AndroidVulkanRenderDevice::BeforeWorldRender()
 {
     if (!g_pGamePersistent)
         return;
-    const Fvector3& sky = g_pGamePersistent->Environment().CurrentEnv.sky_color;
-    renderer.SetWorldClearColor(sky.x, sky.y, sky.z);
-    const CEnvDescriptor& environment = g_pGamePersistent->Environment().CurrentEnv;
+    const CEnvDescriptorMixer& environment = g_pGamePersistent->Environment().CurrentEnv;
+    // There is no sky dome pass yet. sky_color is a multiplier for the sky
+    // texture (near white in CS/CoP weathers), so clear to the fog colour:
+    // fogged geometry then blends into the horizon instead of ending at a
+    // hard white edge.
+    renderer.SetWorldClearColor(environment.fog_color.x, environment.fog_color.y, environment.fog_color.z);
+    // Geometry is cut at maximumWorldDistance (far plane x view-distance
+    // setting); let the fog reach full strength there at the latest.
+    const float fogFar = maximumWorldDistance > 0.f ?
+        std::min(environment.fog_far, maximumWorldDistance) : environment.fog_far;
+    renderer.SetWorldFog(&environment.fog_color.x, std::min(environment.fog_near, fogFar * 0.9f), fogFar);
     renderer.SetWorldLighting(&environment.ambient.x, &environment.hemi_color.x,
         &environment.sun_color.x, &environment.sun_dir.x);
 }

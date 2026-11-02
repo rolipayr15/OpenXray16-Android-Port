@@ -4,6 +4,7 @@ layout(location = 0) in vec3 vertexNormal;
 layout(location = 1) in vec2 vertexTexcoord;
 layout(location = 2) in vec2 vertexLightmapTexcoord;
 layout(location = 3) in vec2 vertexDetailTexcoord;
+layout(location = 4) in float vertexFog;
 layout(location = 0) out vec4 outputColor;
 
 layout(set = 0, binding = 0) uniform sampler2D baseTexture;
@@ -16,9 +17,14 @@ layout(push_constant) uniform WorldConstants
     mat4 worldViewProjection;
     uint materialFlags;
     float detailScale;
+    float fogNear;
+    float fogFar;
     vec4 ambientAndSunDirectionX;
     vec4 hemiAndSunDirectionY;
     vec4 sunColorAndDirectionZ;
+    vec4 normalMatrixCol0;
+    vec4 normalMatrixCol1;
+    vec4 normalMatrixCol2;
 } constants;
 
 void main()
@@ -60,4 +66,8 @@ void main()
         float detailWeight = 1.0 - smoothstep(0.08, 0.35, footprint);
         outputColor.rgb *= mix(vec3(1.0), detail, detailWeight);
     }
+
+    vec3 fogColor = vec3(constants.normalMatrixCol0.w, constants.normalMatrixCol1.w,
+        constants.normalMatrixCol2.w);
+    outputColor.rgb = mix(outputColor.rgb, fogColor, vertexFog);
 }
