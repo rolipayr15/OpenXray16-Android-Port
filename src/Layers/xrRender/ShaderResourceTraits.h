@@ -120,8 +120,29 @@ inline std::pair<char, GLuint> GLUseBinary(pcstr* buffer, size_t size, const GLe
     return { 'p', program };
 }
 
+#if defined(XR_PLATFORM_ANDROID)
+// Depth-only passes (shadow maps) have no pixel shader ("null"). A desktop GL
+// program may omit the fragment stage; an OpenGL ES program must not.
+static GLuint GLEmptyFragmentShaderES()
+{
+    static GLuint shader = 0;
+    if (!shader)
+    {
+        static constexpr pcstr source = "#version 320 es\nvoid main() {}\n";
+        shader = glCreateShader(GL_FRAGMENT_SHADER);
+        CHK_GL(glShaderSource(shader, 1, &source, nullptr));
+        CHK_GL(glCompileShader(shader));
+    }
+    return shader;
+}
+#endif
+
 static GLuint GLLinkMonolithicProgram(pcstr name, GLuint ps, GLuint vs, GLuint gs)
 {
+#if defined(XR_PLATFORM_ANDROID)
+    if (!ps)
+        ps = GLEmptyFragmentShaderES();
+#endif
     const GLuint program = glCreateProgram();
     R_ASSERT(program);
     if (glObjectLabel)
