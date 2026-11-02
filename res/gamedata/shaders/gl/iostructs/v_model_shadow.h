@@ -2,7 +2,8 @@
 out gl_PerVertex { vec4 gl_Position; };
 
 layout(location = POSITION)		in float4	v_model_P		; // POSITION;		// (float,float,float,1)
-#ifdef	SKIN_0
+// SKIN_NONE reads only xyz (v_model.N is float3); GLSL has no implicit truncation.
+#if defined(SKIN_0) || defined(SKIN_NONE)
 layout(location = NORMAL)		in float3	v_model_N		; // NORMAL;		// (nx,ny,nz)
 #else
 layout(location = NORMAL)		in float4	v_model_N		; // NORMAL;		// (nx,ny,nz,index)
