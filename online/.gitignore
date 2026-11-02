@@ -1,0 +1,4 @@
+*.sqlite3
+*.sqlite3-*
+xray-online.ini
+__pycache__/
