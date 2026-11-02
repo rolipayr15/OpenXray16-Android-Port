@@ -2008,13 +2008,15 @@ private:
             VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
         worldAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         VkPipelineRasterizationStateCreateInfo worldRasterizer = rasterizer;
-        // world.vert negates clip-space Y to convert X-Ray's D3D convention to
-        // Vulkan NDC, and that reflection reverses triangle winding. Authored
-        // front faces therefore arrive counter-clockwise, so treat CCW as front
-        // and keep back-face culling for opaque dynamic/HUD geometry. Alpha-
-        // tested and two-sided materials use the no-cull pipelines below.
+        // X-Ray authors front faces clockwise on screen (D3D convention).
+        // world.vert negates clip-space Y so the image lands upright in
+        // Vulkan's y-down framebuffer, i.e. exactly as D3D shows it, where
+        // winding is evaluated - so front faces stay clockwise. Treating CCW
+        // as front (0.8.0) culled the near side of every character and showed
+        // the inside of the far side, as seen on a Mali-G710. Alpha-tested and
+        // two-sided materials use the no-cull pipelines below.
         worldRasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-        worldRasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        worldRasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
         VkPipelineDepthStencilStateCreateInfo depthState{
             VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         depthState.depthTestEnable = VK_TRUE;
