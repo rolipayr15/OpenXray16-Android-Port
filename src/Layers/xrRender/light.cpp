@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Layers/xrRender/AndroidHostRenderer.h"
 #include "light.h"
 
 namespace xray::render::RENDER_NAMESPACE
@@ -52,10 +53,13 @@ light::~light()
     set_active(false);
 
 // remove from Lights_LastFrame
-#if ((RENDER == R_R2) || (RENDER == R_R3) || (RENDER == R_R4) || (RENDER == R_GL)) && !defined(__ANDROID__)
-    for (auto& p_light : RImplementation.Lights_LastFrame)
-        if (this == p_light)
-            p_light = nullptr;
+#if (RENDER == R_R2) || (RENDER == R_R3) || (RENDER == R_R4) || (RENDER == R_GL)
+    if (!UsesAndroidHostRenderer())
+    {
+        for (auto& p_light : RImplementation.Lights_LastFrame)
+            if (this == p_light)
+                p_light = nullptr;
+    }
 #endif // (RENDER==R_R2) || (RENDER==R_R3) || (RENDER==R_R4) || (RENDER==R_GL)
 }
 
@@ -63,12 +67,12 @@ light::~light()
 void light::set_texture(LPCSTR name)
 {
 #ifdef __ANDROID__
-    // Shader objects are created by AndroidVulkanRenderer rather than the GL
-    // RImplementation. Keep the projected texture as part of the real light
-    // state so the Vulkan light pass can resolve it without touching GL.
+    // The Vulkan host creates its own shaders and resolves the projected
+    // texture from the light state; the GL renderer builds shaders below.
     texture_name = name && name[0] ? name : nullptr;
-    return;
-#else
+    if (UsesAndroidHostRenderer())
+        return;
+#endif
     if ((nullptr == name) || (0 == name[0]))
     {
         // default shaders
@@ -104,7 +108,6 @@ void light::set_texture(LPCSTR name)
         }
     }
 #endif // (RENDER!=R_R3) || (RENDER!=R_R4) || (RENDER!=R_GL)
-#endif // __ANDROID__
 }
 #endif
 

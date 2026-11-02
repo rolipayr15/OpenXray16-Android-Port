@@ -3,6 +3,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "stdafx.h"
+#include "Layers/xrRender/AndroidHostRenderer.h"
 #include "LightTrack.h"
 #include "Include/xrRender/RenderVisual.h"
 #include "xrEngine/xr_object.h"
@@ -368,9 +369,8 @@ void CROS_impl::update_smooth(IRenderable* O)
 
 void CROS_impl::calc_sun_value(Fvector& position, IGameObject* _object)
 {
-#ifndef __ANDROID__
-    light* sun = (light*)RImplementation.Lights.sun._get();
-#endif
+    // The Vulkan host does not mirror the GL renderer's sun light object.
+    light* sun = UsesAndroidHostRenderer() ? nullptr : (light*)RImplementation.Lights.sun._get();
 
     if (MODE & IRender_ObjectSpecific::TRACE_SUN)
     {
@@ -378,14 +378,12 @@ void CROS_impl::calc_sun_value(Fvector& position, IGameObject* _object)
         {
             result_sun += ::Random.randI(lt_hemisamples / 4, lt_hemisamples / 2);
             Fvector direction;
-#ifdef __ANDROID__
-            // Vulkan does not mirror the desktop renderer's internal sun
-            // light object. The authoritative direction already lives in the
-            // environment mixer, so trace the same world-space ray directly.
-            direction.set(g_pGamePersistent->Environment().CurrentEnv.sun_dir).invert().normalize();
-#else
-            direction.set(sun->direction).invert().normalize();
-#endif
+            // Without a renderer sun object the environment mixer holds the
+            // authoritative direction; trace the same world-space ray.
+            if (sun)
+                direction.set(sun->direction).invert().normalize();
+            else
+                direction.set(g_pGamePersistent->Environment().CurrentEnv.sun_dir).invert().normalize();
             sun_value = !(g_pGameLevel->ObjectSpace.RayTest(
                             position, direction, 500.f, collide::rqtBoth, &cache_sun, _object)) ?
                 1.f :

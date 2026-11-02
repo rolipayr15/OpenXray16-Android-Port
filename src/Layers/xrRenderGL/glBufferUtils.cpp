@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "Layers/xrRender/BufferUtils.h"
+#include "Layers/xrRender/AndroidHostRenderer.h"
 
 #include <FlexibleVertexFormat.h>
 
@@ -227,12 +228,11 @@ void VertexStagingBuffer::Unmap(bool doFlush /*= false*/)
     VERIFY2(!m_DeviceBuffer, "Attempting to upload buffer twice");
     VERIFY(m_HostBuffer && m_Size);
 
-#ifdef __ANDROID__
-    // The Android renderer consumes the retained CPU data and uploads it to
-    // Vulkan. Calling the GL upload path here would require a second graphics
-    // context and would make model loading backend-dependent again.
-    return;
-#else
+    // The Android Vulkan host consumes the retained CPU data and uploads it
+    // itself; there is no GL context to upload into.
+    if (UsesAndroidHostRenderer())
+        return;
+
     // Upload data to the device
     CreateVertexBuffer(&m_DeviceBuffer, m_HostBuffer, m_Size, false);
 
@@ -241,7 +241,6 @@ void VertexStagingBuffer::Unmap(bool doFlush /*= false*/)
         // Cache buffer isn't required anymore. Free host memory
         DiscardHostBuffer();
     }
-#endif
 }
 
 VertexBufferHandle VertexStagingBuffer::GetBufferHandle() const
@@ -326,9 +325,9 @@ void IndexStagingBuffer::Unmap(bool doFlush /*= false*/)
     VERIFY2(!m_DeviceBuffer, "Attempting to upload buffer twice");
     VERIFY(m_HostBuffer && m_Size);
 
-#ifdef __ANDROID__
-    return;
-#else
+    if (UsesAndroidHostRenderer())
+        return;
+
     // Upload data to the device
     CreateIndexBuffer(&m_DeviceBuffer, m_HostBuffer, m_Size, false);
 
@@ -337,7 +336,6 @@ void IndexStagingBuffer::Unmap(bool doFlush /*= false*/)
         // Cache buffer isn't required anymore. Free host memory
         DiscardHostBuffer();
     }
-#endif
 }
 
 IndexBufferHandle IndexStagingBuffer::GetBufferHandle() const

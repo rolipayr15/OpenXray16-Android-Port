@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Layers/xrRender/AndroidHostRenderer.h"
 #pragma hdrstop
 
 #include "xrCore/FMesh.hpp"
@@ -162,17 +163,15 @@ void Fvisual::Load(const char* N, IReader* data, u32 dwFlags)
 
     if (dwFlags & VLOAD_NOVERTICES)
         return;
-#ifdef __ANDROID__
-    // Android owns Vulkan buffers in AndroidVulkanRenderer. Keep this loader's
+    // The Android Vulkan host owns its buffers; it keeps this loader's
     // host-side vertex/index data for collision, skeletal face collection and
-    // later Vulkan uploads, but never create an OpenGL geometry object.
-    return;
-#else
-    else if (fvf)
+    // its own uploads, and never needs a GL geometry object.
+    if (UsesAndroidHostRenderer())
+        return;
+    if (fvf)
         rm_geom.create(fvf, *p_rm_Vertices, *p_rm_Indices);
     else
         rm_geom.create(vFormat, *p_rm_Vertices, *p_rm_Indices);
-#endif
 }
 
 void Fvisual::Render(CBackend& cmd_list, float, bool use_fast_geo)

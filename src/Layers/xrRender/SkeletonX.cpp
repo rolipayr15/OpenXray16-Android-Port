@@ -3,6 +3,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "stdafx.h"
+#include "Layers/xrRender/AndroidHostRenderer.h"
 #pragma hdrstop
 
 #include "SkeletonX.h"
@@ -163,15 +164,10 @@ void CSkeletonX::_Load(const char* N, IReader* data, u32& dwVertCount)
 
     // u16			hw_bones_cnt		= u16((HW.Caps.geometry.dwRegisters-22)/3);
     //	Igor: some shaders in r1 need more free constant registers
-#ifdef __ANDROID__
-    // Android Vulkan currently skins from the canonical OGF CPU vertices.
-    // Keeping those vertices is also required by bone picking and wallmarks.
-    constexpr bool forceSoftwareSkinning = true;
-    u16 hw_bones_cnt = 0;
-#else
-    constexpr bool forceSoftwareSkinning = false;
-    u16 hw_bones_cnt = u16((HW.Caps.geometry.dwRegisters - 22 - 3) / 3);
-#endif
+    // The Android Vulkan host skins from the canonical OGF CPU vertices
+    // (also needed by bone picking and wallmarks); GL keeps GPU skinning.
+    const bool forceSoftwareSkinning = UsesAndroidHostRenderer();
+    u16 hw_bones_cnt = forceSoftwareSkinning ? 0 : u16((HW.Caps.geometry.dwRegisters - 22 - 3) / 3);
 
 #if RENDER == R_R1
     if (ps_r1_SoftwareSkinning == 1 || RImplementation.o.ffp)
@@ -185,9 +181,8 @@ void CSkeletonX::_Load(const char* N, IReader* data, u32& dwVertCount)
     dwVertCount = data->r_u32();
 
     RenderMode = RM_SKINNING_SOFT;
-#ifndef __ANDROID__
-    RImplementation.shader_option_skinning(-1);
-#endif
+    if (!UsesAndroidHostRenderer())
+        RImplementation.shader_option_skinning(-1);
 
     switch (dwVertType)
     {
@@ -232,9 +227,8 @@ void CSkeletonX::_Load(const char* N, IReader* data, u32& dwVertCount)
             // software
             crc = crc32(data->pointer(), size);
             Vertices1W.create(crc, dwVertCount, (vertBoned1W*)data->pointer());
-#ifndef __ANDROID__
-            RImplementation.shader_option_skinning(-1);
-#endif
+            if (!UsesAndroidHostRenderer())
+                RImplementation.shader_option_skinning(-1);
         }
     }
     break;
@@ -269,9 +263,8 @@ void CSkeletonX::_Load(const char* N, IReader* data, u32& dwVertCount)
             // software
             crc = crc32(data->pointer(), size);
             Vertices2W.create(crc, dwVertCount, (vertBoned2W*)data->pointer());
-#ifndef __ANDROID__
-            RImplementation.shader_option_skinning(-1);
-#endif
+            if (!UsesAndroidHostRenderer())
+                RImplementation.shader_option_skinning(-1);
         }
     }
     break;
@@ -303,9 +296,8 @@ void CSkeletonX::_Load(const char* N, IReader* data, u32& dwVertCount)
         {
             crc = crc32(data->pointer(), size);
             Vertices3W.create(crc, dwVertCount, (vertBoned3W*)data->pointer());
-#ifndef __ANDROID__
-            RImplementation.shader_option_skinning(-1);
-#endif
+            if (!UsesAndroidHostRenderer())
+                RImplementation.shader_option_skinning(-1);
         }
     }
     break;
@@ -338,9 +330,8 @@ void CSkeletonX::_Load(const char* N, IReader* data, u32& dwVertCount)
         {
             crc = crc32(data->pointer(), size);
             Vertices4W.create(crc, dwVertCount, (vertBoned4W*)data->pointer());
-#ifndef __ANDROID__
-            RImplementation.shader_option_skinning(-1);
-#endif
+            if (!UsesAndroidHostRenderer())
+                RImplementation.shader_option_skinning(-1);
         }
     }
     break;

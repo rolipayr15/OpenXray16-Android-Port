@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Layers/xrRender/AndroidHostRenderer.h"
 #include "Layers/xrRender/light.h"
 
 namespace xray::render::RENDER_NAMESPACE
@@ -13,14 +14,10 @@ void light::gi_generate()
     CRandom random;
     random.seed(0x12071980);
 
-#ifdef __ANDROID__
-    // The Vulkan backend does not own the desktop renderer's shared collision
-    // query object. A local query keeps the original GI photon tracing intact
-    // and avoids coupling light state to the GL RImplementation singleton.
-    xrXRC xrc;
-#else
-    xrXRC& xrc = RImplementation.Sectors_xrc;
-#endif
+    // The Vulkan host has no GL RImplementation sector query; a local one
+    // keeps the original GI photon tracing intact.
+    xrXRC hostXrc;
+    xrXRC& xrc = UsesAndroidHostRenderer() ? hostXrc : RImplementation.Sectors_xrc;
     const CDB::MODEL* model = g_pGameLevel->ObjectSpace.GetStaticModel();
     const CDB::TRI* tris = g_pGameLevel->ObjectSpace.GetStaticTris();
     const Fvector* verts = g_pGameLevel->ObjectSpace.GetStaticVerts();

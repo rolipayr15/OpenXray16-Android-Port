@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Layers/xrRender/AndroidHostRenderer.h"
 
 #include "xrCore/FMesh.hpp"
 #include "FSkinned.h"
@@ -61,26 +62,26 @@ void CSkeletonX_PM::Load(const char* N, IReader* data, u32 dwFlags)
     _Load(N, data, vCount);
     void* _verts_ = data->pointer();
     inherited1::Load(N, data, dwFlags | VLOAD_NOVERTICES);
-#ifndef __ANDROID__
-    RImplementation.shader_option_skinning(-1);
-#endif
     vBase = 0;
-#ifndef __ANDROID__
-    _Load_hw(*this, _verts_);
-#endif
+    // The Android Vulkan host skins on the CPU and builds its own buffers.
+    if (!UsesAndroidHostRenderer())
+    {
+        RImplementation.shader_option_skinning(-1);
+        _Load_hw(*this, _verts_);
+    }
 }
 void CSkeletonX_ST::Load(const char* N, IReader* data, u32 dwFlags)
 {
     _Load(N, data, vCount);
     void* _verts_ = data->pointer();
     inherited1::Load(N, data, dwFlags | VLOAD_NOVERTICES);
-#ifndef __ANDROID__
-    RImplementation.shader_option_skinning(-1);
-#endif
     vBase = 0;
-#ifndef __ANDROID__
-    _Load_hw(*this, _verts_);
-#endif
+    // The Android Vulkan host skins on the CPU and builds its own buffers.
+    if (!UsesAndroidHostRenderer())
+    {
+        RImplementation.shader_option_skinning(-1);
+        _Load_hw(*this, _verts_);
+    }
 }
 
 #ifdef __ANDROID__

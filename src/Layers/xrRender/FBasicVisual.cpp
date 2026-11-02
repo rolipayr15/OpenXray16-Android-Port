@@ -3,6 +3,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "stdafx.h"
+#include "Layers/xrRender/AndroidHostRenderer.h"
 #pragma hdrstop
 
 #include "FBasicVisual.h"
@@ -45,10 +46,8 @@ void dxRender_Visual::Load(const char* N, IReader* data, u32)
     {
         R_ASSERT2(hdr.format_version == xrOGF_FormatVersion, "Invalid visual version");
         Type = hdr.type;
-#ifndef __ANDROID__
-        if (hdr.shader_id)
+        if (hdr.shader_id && !UsesAndroidHostRenderer())
             shader = RImplementation.getShader(hdr.shader_id);
-#endif
         vis.box.set(hdr.bb.min, hdr.bb.max);
         vis.sphere.set(hdr.bs.c, hdr.bs.r);
     }
@@ -63,11 +62,11 @@ void dxRender_Visual::Load(const char* N, IReader* data, u32)
         string256 fnT, fnS;
         data->r_stringZ(fnT, sizeof(fnT));
         data->r_stringZ(fnS, sizeof(fnS));
-#ifndef __ANDROID__
-        shader.create(fnS, fnT);
-#else
+#ifdef __ANDROID__
         androidTexture = fnT;
 #endif
+        if (!UsesAndroidHostRenderer())
+            shader.create(fnS, fnT);
     }
 
 // desc
