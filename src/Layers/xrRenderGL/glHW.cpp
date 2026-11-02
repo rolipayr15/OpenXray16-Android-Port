@@ -109,9 +109,12 @@ void CHW::CreateDevice(SDL_Window* hWnd)
         ZoneScopedN("gladLoadGL");
 #if defined(XR_PLATFORM_ANDROID)
         version = gladLoadGLES2(reinterpret_cast<GLADloadfunc>(SDL_GL_GetProcAddress));
-        // The renderer gates its program pipeline and shader cache on the
-        // desktop ARB extensions; both are core in OpenGL ES 3.1 / 3.0.
-        GLAD_GL_ARB_separate_shader_objects = GLAD_GL_ES_VERSION_3_1;
+        // The renderer gates its program pipelines and shader cache on the
+        // desktop ARB extensions. Separable programs exist in ES 3.1, but ES
+        // requires the stage interfaces of a pipeline to match exactly (Mali
+        // rejects every VS that writes a varying the PS does not read), so
+        // link VS+PS into one program instead, as on GL without the extension.
+        GLAD_GL_ARB_separate_shader_objects = 0;
         GLAD_GL_ARB_get_program_binary = GLAD_GL_ES_VERSION_3_0;
 #else
         version = gladLoadGL(reinterpret_cast<GLADloadfunc>(SDL_GL_GetProcAddress));

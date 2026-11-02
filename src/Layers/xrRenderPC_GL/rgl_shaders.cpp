@@ -133,15 +133,15 @@ public:
     [[nodiscard]] auto get() const { return m_sources; }
     [[nodiscard]] auto length() const { return m_sources_lines; }
 
-    void compile(IReader* file, shader_options_holder& options)
+    void compile(IReader* file, shader_options_holder& options, char stage)
     {
-        load_includes(file);
+        load_includes(file, stage);
         apply_options(options);
     }
 
 private:
     // TODO: OGL: make ignore commented includes
-    void load_includes(IReader* file)
+    void load_includes(IReader* file, char stage)
     {
         cpcstr sourceData = static_cast<cpcstr>(file->pointer());
         const size_t dataLength = file->length();
@@ -149,7 +149,7 @@ private:
         // Copy source file data into a null-terminated buffer
 #if defined(XR_PLATFORM_ANDROID)
         // GLSL ES needs explicit locations for multiple fragment outputs.
-        const xr_string rewritten = glRewriteShaderSourceES(xr_string(sourceData, dataLength).c_str());
+        const xr_string rewritten = glRewriteShaderSourceES(xr_string(sourceData, dataLength).c_str(), stage);
         cpstr data = xr_alloc<char>(rewritten.size() + 2);
         CopyMemory(data, rewritten.data(), rewritten.size());
         data[rewritten.size()] = '\n';
@@ -183,7 +183,7 @@ private:
             // Open and read file, recursively load includes
             IReader* R = FS.r_open(path);
             R_ASSERT2(R, path);
-            load_includes(R);
+            load_includes(R, stage);
             FS.r_close(R);
 
             // Add next source, skip quotation
@@ -566,7 +566,7 @@ HRESULT CRender::shader_compile(pcstr name, IReader* fs, pcstr pFunctionName,
 #endif
         // Compile sources list
         shader_sources_manager sources;
-        sources.compile(fs, options);
+        sources.compile(fs, options, pTarget[0]);
 
         // Compile the shader from sources
         program = create_shader(pTarget, sources.get(), sources.length(), filename, result, nullptr);
