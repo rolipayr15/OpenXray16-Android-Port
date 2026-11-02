@@ -1,8 +1,16 @@
 
+// Clip distances are optional in OpenGL ES (GL_EXT_clip_cull_distance; not
+// on Mali). Without them the volume planes are simply not clipped.
+#if !defined(OPENXRAY_GLES) || defined(GL_EXT_clip_cull_distance)
+#define VOLUMETRIC_CLIP_DISTANCE
+#endif
+
 out gl_PerVertex
 {
 	vec4 gl_Position;
+#ifdef VOLUMETRIC_CLIP_DISTANCE
 	float gl_ClipDistance[6];
+#endif
 };
 
 struct v2p
@@ -33,9 +41,11 @@ void main()
 	v2p_fDensity	= O.fDensity;
 //	v2p_tNoise		= O.tNoise;
 	gl_Position		= O.hpos;
+#ifdef VOLUMETRIC_CLIP_DISTANCE
 	for (int i=0; i<3; ++i)
 	{
 		gl_ClipDistance[i] = O.clip0[i];
 		gl_ClipDistance[i+3] = O.clip1[i];
 	}
+#endif
 }

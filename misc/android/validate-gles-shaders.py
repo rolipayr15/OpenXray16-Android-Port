@@ -36,6 +36,31 @@ DEFAULT_DEFINES = {
     'SM_4_1': '1',
 }
 
+# Options the engine enabled on a Pixel 7 Pro (Mali-G710) with default
+# settings; quality features switch on whole code paths the minimal set skips.
+MOBILE_DEFINES = dict(DEFAULT_DEFINES, **{
+    'USE_SOFT_WATER': '1',
+    'SSR_QUALITY': '3',
+    'SSR_HALF_DEPTH': '1',
+    'SSR_JITTER': '1',
+    'USE_SOFT_PARTICLES': '1',
+    'USE_DOF': '1',
+    'SUN_SHAFTS_QUALITY': '2',
+    'SSAO_QUALITY': '3',
+    'SUN_QUALITY': '1',
+    'ALLOW_STEEPPARALLAX': '1',
+    'GBUFFER_OPTIMIZATION': '1',
+})
+PRESETS = {'minimal': DEFAULT_DEFINES, 'mobile': MOBILE_DEFINES}
+
+# Model shaders are always compiled with exactly one skinning option
+# (CRender::shader_compile); check every variant they can be built with.
+SKIN_VARIANTS = ['SKIN_NONE', 'SKIN_0', 'SKIN_1', 'SKIN_2', 'SKIN_3', 'SKIN_4']
+
+
+def variants_for(body):
+    return SKIN_VARIANTS if 'SKIN_' in body else [None]
+
 INCLUDE = re.compile(r'#include\s*"([^"]+)"')
 
 
@@ -86,10 +111,31 @@ def load_preamble(repo_root):
 MRT_OUTPUT = re.compile(r'^(\s*)out(\s+\w+\s+SV_Target)(\d)\s*;', re.M)
 
 
-def rewrite(source):
-    # Must match glShaderSourceES.cpp: GLSL ES needs explicit locations for
-    # multiple fragment outputs (desktop used glBindFragDataLocation).
-    return MRT_OUTPUT.sub(lambda m: f'{m.group(1)}layout(location = {m.group(3)}) out{m.group(2)}{m.group(3)};', source)
+VARYING = re.compile(
+    r'^(\s*layout\s*\([^)]*location[^)]*\)\s*)((?:(?:smooth|noperspective|centroid)\s+)*)(in|out)\s+'
+    r'(float|half|float2|half2|vec2|float3|half3|vec3)\s+(\w+)\s*;(.*)$', re.M)
+COMPONENTS = {'float': 1, 'half': 1, 'float2': 2, 'half2': 2, 'vec2': 2, 'float3': 3, 'half3': 3, 'vec3': 3}
+SWIZZLES = {1: '.x', 2: '.xy', 3: '.xyz'}
+
+
+def rewrite(source, stage):
+    # Must match glShaderSourceES.cpp:
+    # - GLSL ES needs explicit locations for multiple fragment outputs
+    #   (desktop used glBindFragDataLocation);
+    # - float varyings between the vertex and pixel stage are widened to vec4
+    #   so any pair sharing a location links (ES requires identical types).
+    source = MRT_OUTPUT.sub(lambda m: f'{m.group(1)}layout(location = {m.group(3)}) out{m.group(2)}{m.group(3)};', source)
+    if stage not in ('vert', 'frag'):
+        return source
+
+    def widen(match):
+        layout, qualifiers, direction, kind, name, rest = match.groups()
+        if (stage == 'vert') == (direction == 'in'):
+            return match.group(0)  # attributes and render targets keep their types
+        wide = 'oxr_' + name
+        return (f'{layout} {qualifiers}{direction} vec4 {wide};{rest}\n'
+                f'#define {name} {wide}{SWIZZLES[COMPONENTS[kind]]}')
+    return VARYING.sub(widen, source)
 
 
 def main():
@@ -97,6 +143,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--glslc', default=find_glslc())
     parser.add_argument('--shaders', default=os.path.join(repo_root, 'res', 'gamedata', 'shaders', 'gl'))
+    parser.add_argument('--preset', choices=sorted(PRESETS), default='mobile',
+                        help='engine option set to compile with (default: mobile)')
     parser.add_argument('--define', action='append', default=[])
     parser.add_argument('--only', default='')
     parser.add_argument('--verbose', action='store_true')
@@ -104,7 +152,7 @@ def main():
                         help='compile as desktop GLSL 4.10 instead (regression check for the PC renderer)')
     args = parser.parse_args()
 
-    defines = dict(DEFAULT_DEFINES)
+    defines = dict(PRESETS[args.preset])
     for item in args.define:
         name, _, value = item.partition('=')
         defines[name] = value or '1'
@@ -131,23 +179,30 @@ def main():
                 print(f'FAIL {os.path.basename(shader)}: {error}')
                 failures += 1
                 continue
-            source = preamble + options + (body if args.desktop else rewrite(body))
-            temp = os.path.join(scratch, os.path.basename(shader) + '.' + stage)
-            with open(temp, 'w', encoding='utf-8') as f:
-                f.write(source)
-            result = subprocess.run(
-                [args.glslc, profile, '--target-env=opengl', '-fauto-map-locations',
-                 '-fauto-bind-uniforms', '-fshader-stage=' + stage, '-c', temp, '-o', os.devnull],
-                capture_output=True, text=True)
-            if result.returncode != 0:
-                failures += 1
+            failed = False
+            for variant in variants_for(body):
+                extra = f'#define {variant}\t1\n' if variant else ''
+                source = preamble + options + extra + (body if args.desktop else rewrite(body, stage))
+                temp = os.path.join(scratch, os.path.basename(shader) + '.' + stage)
+                with open(temp, 'w', encoding='utf-8') as f:
+                    f.write(source)
+                result = subprocess.run(
+                    [args.glslc, profile, '--target-env=opengl', '-fauto-map-locations',
+                     '-fauto-bind-uniforms', '-fshader-stage=' + stage, '-c', temp, '-o', os.devnull],
+                    capture_output=True, text=True)
+                if result.returncode == 0:
+                    continue
+                failed = True
                 errors = [line for line in result.stderr.splitlines() if 'error:' in line]
                 for line in errors:
                     categories[re.sub(r".*error: '?[^']*'? ?:?", '', line).strip()[:70]] += 1
-                print(f'FAIL {os.path.basename(shader)}: {errors[0] if errors else result.stderr.strip()[:200]}')
+                label = os.path.basename(shader) + (f' [{variant}]' if variant else '')
+                print(f'FAIL {label}: {errors[0] if errors else result.stderr.strip()[:200]}')
                 if args.verbose:
                     print(result.stderr)
-            elif args.verbose:
+                break
+            failures += failed
+            if not failed and args.verbose:
                 print(f'ok   {os.path.basename(shader)}')
 
     language = 'desktop GLSL 4.10' if args.desktop else 'GLSL ES 3.20'
