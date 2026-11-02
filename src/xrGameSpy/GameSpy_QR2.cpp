@@ -53,7 +53,7 @@ void CGameSpy_QR2::UpdateCustomMasterRegistration(bool unregisterServer)
         return;
 
     if (!SendGameSpyMasterRegistration(m_queryPort, unregisterServer))
-        Msg("! Unable to %s SoC server at configured OpenXRay master", unregisterServer ? "unregister" : "register");
+        Msg("! Unable to %s server at configured OpenXRay master", unregisterServer ? "unregister" : "register");
     if (!unregisterServer)
         m_nextCustomMasterHeartbeat = now + std::chrono::seconds(30);
 }

@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "GameSpy_MasterServer.h"
+#include "xrGameSpy_MainDefs.h"
 
 #include <array>
 #include <cerrno>
@@ -7,11 +8,27 @@
 #include <cstring>
 #include <string>
 
+// GameSpy SDK globals (GP/gpiConnect.c, GP/gpiSearch.c): the account
+// services otherwise resolve gpcm/gpsp under the SDK's built-in domain.
+extern "C" char GPConnectionManagerHostname[64];
+extern "C" char GPSearchManagerHostname[64];
+
 namespace
 {
 constexpr size_t MaxHostLength = 253;
 constexpr size_t MaxResponseLength = 64 * 1024;
-constexpr const char* ProtocolGame = "stalkersc";
+
+// The master keeps one list per game, keyed by the GameSpy game names the
+// three games used. The engine mode comes from the same command-line flags
+// xrEngine reads; anything else (CoP and mods built on it) is CoP.
+const char* CurrentGameName()
+{
+    if (strstr(Core.Params, "-shoc") || strstr(Core.Params, "-soc"))
+        return GAMESPY_GAMENAME_SOC;
+    if (strstr(Core.Params, "-cs"))
+        return GAMESPY_GAMENAME_CS;
+    return GAMESPY_GAMENAME;
+}
 
 std::array<char, MaxHostLength + 1> g_masterHost{};
 unsigned short g_masterPort = 28910;
@@ -113,6 +130,14 @@ void ConfigureGameSpyMasterServer(const char* host, unsigned short port)
         g_masterHost[MaxHostLength] = '\0';
     }
     g_masterPort = port ? port : 28910;
+
+    // Accounts (CoP login/registration) live on the same host as the
+    // master; an empty host restores the SDK defaults.
+    if (g_masterHost[0])
+    {
+        xr_strcpy(GPConnectionManagerHostname, g_masterHost.data());
+        xr_strcpy(GPSearchManagerHostname, g_masterHost.data());
+    }
 }
 
 bool IsGameSpyMasterServerConfigured() { return g_masterHost[0] != '\0'; }
@@ -139,9 +164,10 @@ bool QueryGameSpyMasterServer(GameSpyMasterEndpointCallback callback, void* cont
     if (socketHandle == INVALID_SOCKET)
         return false;
 
-    constexpr char request[] = "LIST stalkersc\n";
+    char request[64]{};
+    xr_sprintf(request, "LIST %s\n", CurrentGameName());
     std::string response;
-    const bool received = SendAll(socketHandle, request, sizeof(request) - 1) && ReadResponse(socketHandle, response);
+    const bool received = SendAll(socketHandle, request, std::strlen(request)) && ReadResponse(socketHandle, response);
     closesocket(socketHandle);
     if (!received || response.rfind("XRAYMASTER 1\n", 0) != 0)
         return false;
@@ -187,7 +213,7 @@ bool SendGameSpyMasterRegistration(unsigned short queryPort, bool unregisterServ
     SetSocketTimeout(socketHandle, 1000);
 
     char packet[96]{};
-    xr_sprintf(packet, "%s %s %hu\n", unregisterServer ? "UNREGISTER" : "REGISTER", ProtocolGame, queryPort);
+    xr_sprintf(packet, "%s %s %hu\n", unregisterServer ? "UNREGISTER" : "REGISTER", CurrentGameName(), queryPort);
     const int sent = sendto(socketHandle, packet, static_cast<int>(std::strlen(packet)), 0,
         reinterpret_cast<const sockaddr*>(&address), sizeof(address));
     closesocket(socketHandle);
